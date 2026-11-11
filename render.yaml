@@ -1,108 +1,24 @@
-# StudentOS Render Blueprint
-# https://render.com/docs/blueprint
-#
-# This blueprint defines two services:
-# 1. Frontend: Static site serving the React/Vite build
-# 2. Backend: FastAPI web service for AI API calls
-#
-# To deploy:
-#   1. Push this repository to GitHub
-#   2. Connect your GitHub repo to Render
-#   3. Render will automatically detect render.yaml and create the services
-#
-# Environment Variables (set in Render Dashboard or .env files):
-#   Backend:
-#     - GROQ_API_KEY: Your Groq API key (required)
-#     - GROQ_MODEL: Model to use (optional, default: llama-3.3-70b-versatile)
-#     - ALLOWED_ORIGINS: Comma-separated list of allowed CORS origins
-#
-#   Frontend:
-#     - VITE_API_BASE_URL: URL of the deployed backend service
-
 services:
-  # ============================================================================
-  # Frontend Static Site
-  # Serves the React + Vite production build
-  # ============================================================================
+  # React + Vite frontend
   - type: web
     name: studentos-frontend
-    env: static
-    address: studentos
-    documentation_url: https://github.com/your-org/studentos#readme
-    
-    # Build configuration
+    runtime: static
     buildCommand: cd frontend && npm install && npm run build
-    
-    # The directory where the built files are located
-    publishDirectory: frontend/dist
-    
-    # Environment variables for the build process
-    # VITE_API_BASE_URL is embedded at build time into the frontend bundle
-    envVars:
-      - key: VITE_API_BASE_URL
-        value: ${BACKEND_URL}
-        sync: false
-        description: "URL of the backend API service (set after backend is deployed)"
-    
-    # Skip auto-deploy initially since backend URL is needed
-    autoDeploy: true
+    staticPublishPath: frontend/dist
+    autoDeployTrigger: commit
 
-  # ============================================================================
-  # Backend Web Service
-  # FastAPI server for AI chat and quiz generation via Groq
-  # ============================================================================
+  # FastAPI backend
   - type: web
     name: studentos-backend
-    env: python
-    address: studentos-backend
-    documentation_url: https://github.com/your-org/studentos#readme
-    
-    # Root directory for the backend service
+    runtime: python
+    plan: free
     rootDir: backend
-    
-    # Build command: install Python dependencies
     buildCommand: pip install -r requirements.txt
-    
-    # Start command: run Uvicorn server
-    # $PORT is provided by Render (default: 10000)
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    
-    # Environment variables
+    healthCheckPath: /api/health
+    autoDeployTrigger: commit
     envVars:
       - key: GROQ_API_KEY
         sync: false
-        description: "Your Groq API key from https://console.groq.com/keys"
-    
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
-        sync: false
-        description: "Groq model to use for AI responses"
-    
-      - key: ALLOWED_ORIGINS
-        value: ${FRONTEND_URL}
-        sync: false
-        description: "Comma-separated list of allowed CORS origins (frontend URL)"
-    
-    # Health check configuration
-    healthCheckPath: /api/health
-    healthCheckIntervalSeconds: 30
-    healthCheckTimeoutSeconds: 10
-    healthCheckThreshold: 3
-    healthCheckUnhealthyThreshold: 2
-
-  # ============================================================================
-  # Notes:
-  # 1. ${BACKEND_URL} and ${FRONTEND_URL} are placeholder variables.
-  #    After initial deployment, you'll need to:
-  #    a. Deploy the backend first
-  #    b. Copy its URL (e.g., https://studentos-backend.onrender.com)
-  #    c. Update the frontend's VITE_API_BASE_URL env var
-  #    d. Update the backend's ALLOWED_ORIGINS to include the frontend URL
-  #    e. Redeploy both services
-  #
-  # 2. For a simpler setup, you can deploy services manually via Render dashboard
-  #    without using this blueprint file.
-  #
-  # 3. The FRONTEND_URL should be set to the deployed frontend URL for CORS.
-  #    Example: https://studentos.onrender.com
-  # ============================================================================
