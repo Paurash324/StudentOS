@@ -1,0 +1,6 @@
+{
+  "name": "StudentOS",
+  "description": "Modern AI-powered student productivity dashboard and study planner for university students.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
