@@ -81,7 +81,7 @@ Or run individually:
 
 ### Option B: Manual Terminal Launch
 
-Open two PowerShell terminals in the project root: `C:\Users\jhapa\OneDrive\Desktop\StudentOS\StudentOS`.
+Open two PowerShell terminals in the project root (the folder where this repository is cloned).
 
 ### 1. Terminal 1: Backend Setup & Launch (FastAPI)
 
@@ -293,6 +293,10 @@ For proper CORS configuration, deploy in this order:
 4. **Update Backend CORS** - Set `ALLOWED_ORIGINS` to frontend URL
 5. **Redeploy Backend** - Apply CORS changes
 
+The included `render.yaml` also sets the expected `VITE_API_BASE_URL` and production
+`ALLOWED_ORIGINS` values for the default Render service names. If you rename either
+service or use a custom domain, update those two values in Render before redeploying.
+
 ---
 
 ## 🛡️ Security & Constraints
@@ -303,4 +307,3 @@ For proper CORS configuration, deploy in this order:
 - **API Key Management**: The `/api/set-key` endpoint has been disabled. API keys must be configured via deployment platform environment variables.
 - **Zero Authentication / Server Database Overhead**: Built as a responsive single-page web app with client-side state persistence in `localStorage`.
 - **Ephemeral Filesystem**: On platforms like Render, the filesystem is ephemeral. The backend reads configuration from environment variables, not from `.env` files written at runtime.
-

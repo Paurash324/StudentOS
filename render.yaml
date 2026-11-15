@@ -6,6 +6,10 @@ services:
     buildCommand: cd frontend && npm install && npm run build
     staticPublishPath: frontend/dist
     autoDeployTrigger: commit
+    envVars:
+      # Vite embeds this value during the static build.
+      - key: VITE_API_BASE_URL
+        value: https://studentos-backend.onrender.com
 
   # FastAPI backend
   - type: web
@@ -22,3 +26,5 @@ services:
         sync: false
       - key: GROQ_MODEL
         value: llama-3.3-70b-versatile
+      - key: ALLOWED_ORIGINS
+        value: https://studentos-frontend.onrender.com
