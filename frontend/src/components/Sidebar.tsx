@@ -8,7 +8,8 @@ import {
   Settings,
   ChevronRight,
   Menu,
-  X
+  X,
+  GraduationCap
 } from 'lucide-react';
 import { PageTab, StudentProfile } from '../types';
 import { StudentOSLogo } from './StudentOSLogo';
@@ -34,6 +35,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'planner' as PageTab, label: 'Smart Planner', icon: CalendarRange },
     { id: 'assistant' as PageTab, label: 'AI Study Assistant', icon: Sparkles },
     { id: 'quiz' as PageTab, label: 'Quiz Generator', icon: HelpCircle },
+    { id: 'exam' as PageTab, label: 'Exam Intelligence', icon: GraduationCap },
     { id: 'settings' as PageTab, label: 'Settings', icon: Settings },
   ];
 

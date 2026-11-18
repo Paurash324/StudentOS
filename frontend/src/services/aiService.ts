@@ -1,4 +1,5 @@
 import { QuizQuestion } from '../types';
+import { SyllabusContextPayload } from '../utils/syllabus';
 
 /**
  * Get the API base URL for backend requests.
@@ -25,7 +26,7 @@ function getApiBaseUrl(): string {
  * In production: https://backend-onrender.com/api/chat
  * In development: /api/chat (proxied by Vite)
  */
-function buildApiUrl(endpoint: string): string {
+export function buildApiUrl(endpoint: string): string {
   const base = getApiBaseUrl();
   const cleanEndpoint = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
   return base ? `${base}${cleanEndpoint}` : cleanEndpoint;
@@ -35,7 +36,8 @@ export async function askAcademicAssistant(
   prompt: string, 
   subjectContext: string = "All Subjects",
   history: { role: string; text: string }[] = [],
-  answerStyle: string = "exam_ready"
+  answerStyle: string = "exam_ready",
+  syllabus: SyllabusContextPayload | null = null
 ): Promise<{ text: string; followUps: string[] }> {
   try {
     const formattedMessages = [
@@ -54,7 +56,8 @@ export async function askAcademicAssistant(
       body: JSON.stringify({
         messages: formattedMessages,
         subject: subjectContext,
-        answer_style: answerStyle
+        answer_style: answerStyle,
+        syllabus: syllabus ?? undefined
       }),
     });
 
@@ -77,7 +80,19 @@ export async function askAcademicAssistant(
     console.warn("Backend /api/chat fetch failed, falling back to local academic engine:", err);
   }
 
-  // Domain-grounded university academic engine fallback
+  // Never fabricate a syllabus-grounded answer when the verified syllabus could not be sent.
+  if (syllabus) {
+    return {
+      text: `### AI Tutor unavailable\n\nI could not reach the tutoring service, so I will not answer this using your verified syllabus. Your syllabus is safe and stored locally; please check the backend connection and try again.\n\nIf you only want general background on this subject, switch the syllabus context to **All Subjects**.`,
+      followUps: [
+        "Retry this question",
+        "Explain this from general subject knowledge instead",
+        "Show me my verified syllabus topics"
+      ]
+    };
+  }
+
+  // Domain-grounded university academic engine fallback (general knowledge only)
   return generateDomainAcademicResponse(prompt, subjectContext);
 }
 
@@ -240,18 +255,20 @@ With your exam in **4 days (Saturday, Nov 15)**, passive re-reading has low rete
 
   // Default intelligent assistant response
   return {
-    text: `### University Study Analysis: ${subjectContext}
+    text: `### General Study Guidance: ${subjectContext}
 
 Thank you for your question regarding **"${prompt}"**.
 
+*This is general subject knowledge from the offline study engine, not content from a verified syllabus.*
+
 #### Core Conceptual Breakdown
-1. **Fundamental Principle**: In high-level university coursework, understanding the *underlying invariant* is far more important than memorizing edge cases.
-2. **Mathematical/System Context**: Every algorithm and theoretical model operates under strict preconditions (e.g., non-negative weights, non-singular determinants, or cache coherency protocols).
-3. **Common Pitfall**: Students often confuse asymptotic worst-case bounds with average-case runtime or fail to state the base case in induction proofs.
+1. **Fundamental Principle**: In high-level university coursework, understanding the *underlying invariant* is usually more important than memorising edge cases.
+2. **Mathematical/System Context**: Theoretical models operate under preconditions (for example non-negative weights, non-singular determinants, or cache coherency protocols).
+3. **Common Pitfall**: Students often confuse asymptotic worst-case bounds with average-case runtime, or fail to state the base case in an induction proof.
 
 #### Recommended Action Steps:
-- Verify this topic against the **CS 301 / CS 320 syllabus topics**.
-- Generate a 5-question diagnostic quiz in the **Quiz Generator** to test your spontaneous recall.
+- Check this topic against the syllabus topics you have added for this subject, if any.
+- Generate a 5-question diagnostic quiz in the **Quiz Generator** to test your recall.
 - Allocate a 45-minute Deep Work slot in your **Smart Planner** for hands-on problem solving.`,
     followUps: [
       `Generate 3 practice questions on this topic`,
@@ -265,7 +282,8 @@ export async function generateQuizQuestionsForTopic(
   subjectCode: string,
   topic: string,
   count: number,
-  difficulty: string
+  difficulty: string,
+  syllabusContext: { excerpt: string; grounded: boolean } | null = null
 ): Promise<QuizQuestion[]> {
   try {
     const response = await fetch(buildApiUrl('/api/generate-quiz'), {
@@ -278,6 +296,8 @@ export async function generateQuizQuestionsForTopic(
         topic: topic || "Core concepts and exam prep",
         difficulty: difficulty || "Intermediate",
         num_questions: count || 5,
+        syllabus_context: syllabusContext?.excerpt,
+        syllabus_grounded: Boolean(syllabusContext?.grounded),
       }),
     });
 
@@ -300,7 +320,12 @@ export async function generateQuizQuestionsForTopic(
     console.warn("Backend /api/generate-quiz fetch failed, falling back to local question bank:", err);
   }
 
-  // Fallback to high quality curated question bank
+  // A syllabus-grounded quiz must never silently fall back to generic questions.
+  if (syllabusContext?.grounded) {
+    throw new Error("The syllabus-based quiz generator is unavailable. Check the backend connection and try again.");
+  }
+
+  // Fallback to high quality curated question bank (general subject knowledge)
   return [
     {
       id: `gen-${Date.now()}-1`,

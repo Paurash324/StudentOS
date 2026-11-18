@@ -79,3 +79,6 @@ temp/
 # Build artifacts
 # ========================
 *.tsbuildinfo
+
+# Local Freebuff metadata
+.freebuff/

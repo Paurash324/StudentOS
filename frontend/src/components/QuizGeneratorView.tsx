@@ -16,6 +16,7 @@ import {
 import confetti from 'canvas-confetti';
 import { Subject, QuizQuestion, PageTab } from '../types';
 import { generateQuizQuestionsForTopic } from '../services/aiService';
+import { buildQuizSyllabusExcerpt } from '../utils/syllabus';
 
 interface QuizGeneratorViewProps {
   subjects: Subject[];
@@ -38,6 +39,10 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [generationError, setGenerationError] = useState<string | null>(null);
 
+  // Verified-syllabus scope selection
+  const [selectedUnitId, setSelectedUnitId] = useState<string>('');
+  const [selectedTopicId, setSelectedTopicId] = useState<string>('');
+
   // Active quiz state
   const [activeQuizQuestions, setActiveQuizQuestions] = useState<QuizQuestion[] | null>(null);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState<number>(0);
@@ -52,6 +57,8 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({
       if (sub && sub.topics.length > 0) {
         setTopicInput(sub.topics[2]?.title || sub.topics[0]?.title || "Core Invariants");
       }
+      setSelectedUnitId('');
+      setSelectedTopicId('');
     }
   }, [initialSubjectId, subjects]);
 
@@ -61,16 +68,40 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({
     if (sub && sub.topics.length > 0) {
       setTopicInput(sub.topics[0]?.title || "Course Invariants");
     }
+    setSelectedUnitId('');
+    setSelectedTopicId('');
   };
+
+  const currentSubject = subjects.find(s => s.id === selectedSubjectId);
+  const verifiedSyllabus =
+    currentSubject?.syllabus?.status === 'verified' && currentSubject.syllabus.units.length > 0
+      ? currentSubject.syllabus
+      : null;
+  const availableUnits = verifiedSyllabus?.units ?? [];
+  const availableTopics = selectedUnitId
+    ? availableUnits.find(unit => unit.id === selectedUnitId)?.topics ?? []
+    : [];
 
   const handleGenerateQuiz = async () => {
     setIsGenerating(true);
     setGenerationError(null);
-    const currentSubject = subjects.find(s => s.id === selectedSubjectId);
     const subjectCode = currentSubject ? currentSubject.code : "CS 301";
 
+    const syllabusScope = buildQuizSyllabusExcerpt(
+      currentSubject,
+      selectedUnitId || undefined,
+      selectedTopicId || undefined
+    );
+    const topicForApi = syllabusScope ? syllabusScope.label : topicInput;
+
     try {
-      const generated = await generateQuizQuestionsForTopic(subjectCode, topicInput, questionCount, difficulty);
+      const generated = await generateQuizQuestionsForTopic(
+        subjectCode,
+        topicForApi,
+        questionCount,
+        difficulty,
+        syllabusScope ? { excerpt: syllabusScope.excerpt, grounded: true } : null
+      );
       if (generated && generated.length > 0) {
         setActiveQuizQuestions(generated);
         setCurrentQuestionIndex(0);
@@ -82,7 +113,11 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({
       }
     } catch (err: any) {
       console.error("Quiz generation error:", err);
-      setGenerationError("Error communicating with AI quiz generator. Please check your backend.");
+      setGenerationError(
+        err instanceof Error && err.message
+          ? err.message
+          : "Error communicating with AI quiz generator. Please check your backend."
+      );
     } finally {
       setIsGenerating(false);
     }
@@ -163,7 +198,9 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({
             </div>
             <div>
               <h2 className="font-display text-base font-bold text-slate-900">Custom Diagnostic Generator</h2>
-              <p className="font-sans text-xs text-slate-500">Configure subject, topic, and cognitive rigor (Powered by Groq)</p>
+              <p className="font-sans text-xs text-slate-500">
+                {verifiedSyllabus ? 'Verified-syllabus scope with configurable unit, topic, and difficulty' : 'General subject knowledge quiz (Powered by Groq)'}
+              </p>
             </div>
           </div>
 
@@ -193,43 +230,113 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({
               </select>
             </div>
 
-            {/* Topic Input */}
-            <div>
-              <div className="flex items-center justify-between mb-1.5">
-                <label className="text-xs font-semibold text-slate-700 uppercase tracking-wider block">
-                  Specific Topic / Focus Area
-                </label>
-                {currentSubjectObj && (
-                  <span className="text-[11px] text-indigo-600 font-semibold">
-                    {currentSubjectObj.topics.length} topics on syllabus
+            {/* Quiz source: verified syllabus scope or general knowledge */}
+            {verifiedSyllabus ? (
+              <div className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50/50 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <span className="text-[11px] font-semibold text-emerald-800 uppercase tracking-wider block">
+                      Syllabus-based quiz
+                    </span>
+                    <p className="text-[11px] text-emerald-900/80 mt-0.5">
+                      Questions are generated only from your verified syllabus content.
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-md border text-emerald-700 bg-white border-emerald-200 whitespace-nowrap">
+                    Verified
                   </span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                      Syllabus Unit
+                    </label>
+                    <select
+                      value={selectedUnitId}
+                      onChange={(e) => {
+                        setSelectedUnitId(e.target.value);
+                        setSelectedTopicId('');
+                      }}
+                      className="w-full text-xs font-medium text-slate-900 bg-white border border-slate-200 rounded-xl p-2.5 focus:outline-none focus:border-indigo-500 cursor-pointer"
+                    >
+                      <option value="">All units</option>
+                      {availableUnits.map(unit => (
+                        <option key={unit.id} value={unit.id}>
+                          {unit.unitNumber ? `Unit ${unit.unitNumber}: ` : ''}{unit.title}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[11px] font-semibold text-slate-700 block mb-1">
+                      Individual Topic
+                    </label>
+                    <select
+                      value={selectedTopicId}
+                      onChange={(e) => setSelectedTopicId(e.target.value)}
+                      disabled={!selectedUnitId || availableTopics.length === 0}
+                      className="w-full text-xs font-medium text-slate-900 bg-white border border-slate-200 rounded-xl p-2.5 focus:outline-none focus:border-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      <option value="">
+                        {selectedUnitId ? 'All topics in this unit' : 'Select a unit first'}
+                      </option>
+                      {availableTopics.map(topic => (
+                        <option key={topic.id} value={topic.id}>{topic.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <p className="text-[11px] text-emerald-900/80">
+                  Scope: <strong className="font-semibold">{buildQuizSyllabusExcerpt(currentSubject, selectedUnitId || undefined, selectedTopicId || undefined)?.label ?? 'Entire verified syllabus'}</strong>
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <div className="p-2.5 rounded-xl border border-amber-200 bg-amber-50 text-[11px] text-amber-900 flex items-start gap-1.5">
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                  <span>
+                    {currentSubjectObj?.code || 'This subject'} has no verified syllabus. This quiz will use <strong className="font-semibold">general subject knowledge</strong>, not your official curriculum. Add a syllabus from Edit Subject to generate syllabus-based quizzes.
+                  </span>
+                </div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-semibold text-slate-700 uppercase tracking-wider block">
+                    Specific Topic / Focus Area
+                  </label>
+                  {currentSubjectObj && (
+                    <span className="text-[11px] text-indigo-600 font-semibold">
+                      {currentSubjectObj.topics.length} topics tracked
+                    </span>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  value={topicInput}
+                  onChange={(e) => setTopicInput(e.target.value)}
+                  placeholder="e.g. Dynamic Programming Invariants or Virtual Memory"
+                  className="w-full text-xs font-medium text-slate-900 bg-slate-50 border border-slate-200 rounded-xl p-3 focus:outline-none focus:border-indigo-500 shadow-2xs"
+                />
+
+                {/* Quick Topic Chips from Subject */}
+                {currentSubjectObj && currentSubjectObj.topics.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-1">
+                    <span className="text-[11px] text-slate-400 py-0.5">Tracked topics:</span>
+                    {currentSubjectObj.topics.slice(0, 3).map(t => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setTopicInput(t.title)}
+                        className="text-[11px] text-slate-600 hover:text-indigo-700 bg-slate-100 hover:bg-indigo-50 px-2 py-0.5 rounded-md transition-colors cursor-pointer"
+                      >
+                        {t.title}
+                      </button>
+                    ))}
+                  </div>
                 )}
               </div>
-              <input
-                type="text"
-                value={topicInput}
-                onChange={(e) => setTopicInput(e.target.value)}
-                placeholder="e.g. Dynamic Programming Invariants or Virtual Memory"
-                className="w-full text-xs font-medium text-slate-900 bg-slate-50 border border-slate-200 rounded-xl p-3 focus:outline-none focus:border-indigo-500 shadow-2xs"
-              />
-
-              {/* Quick Topic Chips from Subject */}
-              {currentSubjectObj && (
-                <div className="flex flex-wrap gap-1.5 mt-2.5">
-                  <span className="text-[11px] text-slate-400 py-0.5">Syllabus suggestions:</span>
-                  {currentSubjectObj.topics.slice(0, 3).map(t => (
-                    <button
-                      key={t.id}
-                      type="button"
-                      onClick={() => setTopicInput(t.title)}
-                      className="text-[11px] text-slate-600 hover:text-indigo-700 bg-slate-100 hover:bg-indigo-50 px-2 py-0.5 rounded-md transition-colors cursor-pointer"
-                    >
-                      {t.title}
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
+            )}
 
             {/* Number of Questions & Difficulty */}
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -282,7 +389,7 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({
             <div className="pt-4 border-t border-slate-100">
               <button
                 onClick={handleGenerateQuiz}
-                disabled={isGenerating || !topicInput.trim()}
+                disabled={isGenerating || (!verifiedSyllabus && !topicInput.trim())}
                 className="w-full flex items-center justify-center gap-2 py-3.5 px-6 rounded-xl font-bold text-sm text-white bg-indigo-600 hover:bg-indigo-700 active:scale-[0.99] disabled:opacity-60 transition-all shadow-sm shadow-indigo-600/30 cursor-pointer"
               >
                 <Sparkles className={`w-4 h-4 ${isGenerating ? 'animate-spin' : ''}`} />

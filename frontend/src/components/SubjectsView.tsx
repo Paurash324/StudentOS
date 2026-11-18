@@ -15,9 +15,13 @@ import {
   Layers,
   ChevronRight,
   Pencil,
-  Trash2
+  Trash2,
+  ShieldCheck
 } from 'lucide-react';
-import { Subject, SubjectDifficulty, SubjectPriority, SyllabusTopic, PageTab } from '../types';
+import { CourseSyllabus, Subject, SubjectDifficulty, SubjectPriority, SyllabusTopic, PageTab } from '../types';
+import { SyllabusInputPanel } from './SyllabusInputPanel';
+import { SyllabusReviewModal } from './SyllabusReviewModal';
+import { syllabusToTopics } from '../utils/syllabus';
 
 interface SubjectsViewProps {
   subjects: Subject[];
@@ -54,6 +58,14 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
   const [newConfidence, setNewConfidence] = useState<number>(70);
   const [newTopicsText, setNewTopicsText] = useState('Introduction & Overview\nCore Principles & Proofs\nMidterm Review\nAdvanced Applications\nFinal Synthesis');
 
+  // Course syllabus capture (student-supplied, reviewed before it is saved)
+  const [newUniversity, setNewUniversity] = useState('');
+  const [newDegree, setNewDegree] = useState('');
+  const [newSemester, setNewSemester] = useState('');
+  const [syllabusDraft, setSyllabusDraft] = useState<CourseSyllabus | null>(null);
+  const [reviewTarget, setReviewTarget] = useState<CourseSyllabus | null>(null);
+  const [reviewMode, setReviewMode] = useState<'add' | 'edit'>('add');
+
   const filteredSubjects = subjects.filter(sub => {
     const matchesSearch = sub.code.toLowerCase().includes(searchQuery.toLowerCase()) || 
                           sub.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -66,6 +78,13 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
     e.preventDefault();
     if (!newCode.trim() || !newName.trim()) return;
 
+    // An unreviewed AI extraction can never be saved as an authoritative syllabus.
+    if (syllabusDraft && syllabusDraft.status !== 'verified') {
+      setReviewMode('add');
+      setReviewTarget(syllabusDraft);
+      return;
+    }
+
     const topicLines = newTopicsText.split('\n').filter(line => line.trim().length > 0);
     const parsedTopics: SyllabusTopic[] = topicLines.map((line, idx) => ({
       id: `topic-${Date.now()}-${idx}`,
@@ -73,6 +92,11 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
       completed: false,
       estimatedHours: 5,
     }));
+
+    const verifiedSyllabus = syllabusDraft?.status === 'verified' ? syllabusDraft : undefined;
+    const subjectTopics = verifiedSyllabus
+      ? syllabusToTopics(verifiedSyllabus, parsedTopics)
+      : parsedTopics;
 
     const subject: Subject = {
       id: `sub-${Date.now()}`,
@@ -85,11 +109,12 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
       priority: newPriority,
       color: "#6366F1",
       accentBg: "#EEF2FF",
-      topics: parsedTopics.length > 0 ? parsedTopics : [
+      topics: subjectTopics.length > 0 ? subjectTopics : [
         { id: `t1-${Date.now()}`, title: "Course Fundamentals", completed: false, estimatedHours: 4 },
         { id: `t2-${Date.now()}`, title: "Midterm Preparation", completed: false, estimatedHours: 6 },
         { id: `t3-${Date.now()}`, title: "Comprehensive Capstone", completed: false, estimatedHours: 8 }
       ],
+      ...(verifiedSyllabus ? { syllabus: verifiedSyllabus } : {}),
       nextExam: {
         title: "Module Examination",
         date: "Dec 15, 2026",
@@ -104,6 +129,29 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
     setNewCode('');
     setNewName('');
     setNewProfessor('');
+    setNewUniversity('');
+    setNewDegree('');
+    setNewSemester('');
+    setSyllabusDraft(null);
+  };
+
+  const handleConfirmReview = (verified: CourseSyllabus) => {
+    if (reviewMode === 'edit' && editingSubject) {
+      setEditingSubject({
+        ...editingSubject,
+        syllabus: verified,
+        topics: syllabusToTopics(verified, editingSubject.topics),
+      });
+    } else {
+      setSyllabusDraft({
+        ...verified,
+        university: newUniversity.trim() || verified.university,
+        degree: newDegree.trim() || verified.degree,
+        semester: newSemester.trim() || verified.semester,
+        courseCode: newCode.trim() || verified.courseCode,
+      });
+    }
+    setReviewTarget(null);
   };
 
   const handleOpenEdit = (sub: Subject, e: React.MouseEvent) => {
@@ -114,6 +162,12 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
   const handleSaveEdit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingSubject || !onEditSubject) return;
+    // Never persist an unreviewed extraction, even through the edit modal.
+    if (editingSubject.syllabus && editingSubject.syllabus.status !== 'verified') {
+      setReviewMode('edit');
+      setReviewTarget(editingSubject.syllabus);
+      return;
+    }
     onEditSubject(editingSubject);
     setEditingSubject(null);
   };
@@ -234,11 +288,22 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
                   </div>
                 </div>
 
-                {/* Metadata: Professor & Credits */}
-                <div className="flex items-center gap-2 text-xs text-slate-500 mb-5 font-sans">
+                {/* Metadata: Professor, Credits & syllabus verification */}
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mb-5 font-sans">
                   <span>{sub.professor}</span>
                   <span aria-hidden="true" className="text-slate-300">·</span>
                   <span className="font-display font-semibold text-slate-600">{sub.credits} Credits</span>
+                  <span aria-hidden="true" className="text-slate-300">·</span>
+                  {sub.syllabus?.status === 'verified' ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-1.5 py-0.5">
+                      <ShieldCheck className="w-3 h-3" />
+                      Syllabus verified
+                    </span>
+                  ) : (
+                    <span className="text-[10px] font-semibold text-slate-500 bg-slate-50 border border-slate-200 rounded-md px-1.5 py-0.5">
+                      No verified syllabus
+                    </span>
+                  )}
                 </div>
 
                 {/* Metrics: Syllabus Progress */}
@@ -338,8 +403,17 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
 
             {/* Topics List */}
             <div className="flex-1 overflow-y-auto py-4 space-y-2 pr-1 font-sans">
-              <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2 font-sans">
-                Course Syllabus Breakdown
+              <div className="flex items-center justify-between gap-2 mb-2 font-sans">
+                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  Course Syllabus Breakdown
+                </span>
+                <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-md border ${
+                  selectedSubject.syllabus?.status === 'verified'
+                    ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                    : 'text-slate-500 bg-slate-50 border-slate-200'
+                }`}>
+                  {selectedSubject.syllabus?.status === 'verified' ? 'Verified by student' : 'Topics only'}
+                </span>
               </div>
               {selectedSubject.topics.map((topic, idx) => (
                 <div
@@ -368,6 +442,11 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
                         ~{topic.estimatedHours}h
                       </span>
                     </div>
+                    {topic.unitTitle && (
+                      <span className="text-[10px] text-slate-400 mt-0.5 block truncate">
+                        {topic.unitTitle}
+                      </span>
+                    )}
                   </div>
                 </div>
               ))}
@@ -397,7 +476,7 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
       {/* Add Subject Modal */}
       {isAddModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs font-sans">
-          <div className="bg-white border border-[#E5E9F2] rounded-2xl w-full max-w-lg p-6 shadow-xl max-h-[90vh] overflow-y-auto">
+          <div className="bg-white border border-[#E5E9F2] rounded-2xl w-full max-w-2xl p-6 shadow-xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-5">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-700 flex items-center justify-center">
@@ -463,6 +542,43 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
                 </div>
               </div>
 
+              {/* Program details (optional, stored with the syllabus) */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <label className="font-semibold text-slate-700 flex items-center justify-between">
+                    <span>University</span>
+                    <span className="text-slate-400 font-normal">Optional</span>
+                  </label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Tribhuvan University"
+                    value={newUniversity}
+                    onChange={(e) => setNewUniversity(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-500 text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="font-semibold text-slate-700">Degree / Program</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. B.Sc. Computer Science"
+                    value={newDegree}
+                    onChange={(e) => setNewDegree(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-500 text-xs"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="font-semibold text-slate-700">Semester</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Semester 4"
+                    value={newSemester}
+                    onChange={(e) => setNewSemester(e.target.value)}
+                    className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-500 text-xs"
+                  />
+                </div>
+              </div>
+
               <div className="grid grid-cols-3 gap-3">
                 <div className="space-y-1">
                   <label className="font-semibold text-slate-700">Difficulty</label>
@@ -501,18 +617,43 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
                 </div>
               </div>
 
+              <SyllabusInputPanel
+                syllabus={syllabusDraft}
+                meta={{
+                  university: newUniversity,
+                  degree: newDegree,
+                  semester: newSemester,
+                  courseCode: newCode,
+                }}
+                onChange={setSyllabusDraft}
+                onRequestReview={(draft) => {
+                  setReviewMode('add');
+                  setReviewTarget(draft);
+                }}
+                onSuggestedFields={({ subjectName, courseCode }) => {
+                  if (!newName.trim() && subjectName) setNewName(subjectName);
+                  if (!newCode.trim() && courseCode) setNewCode(courseCode);
+                }}
+              />
+
               <div className="space-y-1">
                 <label className="font-semibold text-slate-700 flex items-center justify-between">
-                  <span>Syllabus Topics (One per line)</span>
+                  <span>{syllabusDraft?.status === 'verified' ? 'Quick Topic List (not used)' : 'Quick Topic List'}</span>
                   <span className="text-slate-400 font-normal">Optional</span>
                 </label>
                 <textarea
-                  rows={4}
+                  rows={3}
                   value={newTopicsText}
                   onChange={(e) => setNewTopicsText(e.target.value)}
+                  disabled={syllabusDraft?.status === 'verified'}
                   placeholder="Topic 1: Foundations..."
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-500 text-xs font-sans"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-500 text-xs font-sans disabled:opacity-60 disabled:cursor-not-allowed"
                 />
+                <p className="text-[10px] text-slate-400">
+                  {syllabusDraft?.status === 'verified'
+                    ? 'Your verified syllabus units and topics will be used instead.'
+                    : 'Used only when no verified syllabus is attached.'}
+                </p>
               </div>
 
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
@@ -538,7 +679,7 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
       {/* Edit Subject Modal */}
       {editingSubject && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs font-sans">
-          <div className="bg-white border border-[#E5E9F2] rounded-2xl w-full max-w-lg p-6 shadow-xl max-h-[90vh] overflow-y-auto">
+          <div className="bg-white border border-[#E5E9F2] rounded-2xl w-full max-w-2xl p-6 shadow-xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100 mb-5">
               <div className="flex items-center gap-2.5">
                 <div className="w-8 h-8 rounded-xl bg-indigo-50 text-indigo-700 flex items-center justify-center">
@@ -639,6 +780,83 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
                 </div>
               </div>
 
+              {editingSubject.syllabus && (
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="space-y-1">
+                    <label className="font-semibold text-slate-700 flex items-center justify-between">
+                      <span>University</span>
+                      <span className="text-slate-400 font-normal">Optional</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={editingSubject.syllabus.university ?? ''}
+                      onChange={(e) =>
+                        setEditingSubject({
+                          ...editingSubject,
+                          syllabus: { ...editingSubject.syllabus!, university: e.target.value || undefined },
+                        })
+                      }
+                      placeholder="e.g. Tribhuvan University"
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-500 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="font-semibold text-slate-700">Degree / Program</label>
+                    <input
+                      type="text"
+                      value={editingSubject.syllabus.degree ?? ''}
+                      onChange={(e) =>
+                        setEditingSubject({
+                          ...editingSubject,
+                          syllabus: { ...editingSubject.syllabus!, degree: e.target.value || undefined },
+                        })
+                      }
+                      placeholder="e.g. B.Sc. Computer Science"
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-500 text-xs"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="font-semibold text-slate-700">Semester</label>
+                    <input
+                      type="text"
+                      value={editingSubject.syllabus.semester ?? ''}
+                      onChange={(e) =>
+                        setEditingSubject({
+                          ...editingSubject,
+                          syllabus: { ...editingSubject.syllabus!, semester: e.target.value || undefined },
+                        })
+                      }
+                      placeholder="e.g. Semester 4"
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:border-indigo-500 text-xs"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <SyllabusInputPanel
+                syllabus={editingSubject.syllabus ?? null}
+                meta={{
+                  university: editingSubject.syllabus?.university,
+                  degree: editingSubject.syllabus?.degree,
+                  semester: editingSubject.syllabus?.semester,
+                  courseCode: editingSubject.code,
+                }}
+                onChange={(updatedSyllabus) =>
+                  setEditingSubject({
+                    ...editingSubject,
+                    syllabus: updatedSyllabus,
+                    topics:
+                      updatedSyllabus.status === 'verified'
+                        ? syllabusToTopics(updatedSyllabus, editingSubject.topics)
+                        : editingSubject.topics,
+                  })
+                }
+                onRequestReview={(draft) => {
+                  setReviewMode('edit');
+                  setReviewTarget(draft);
+                }}
+              />
+
               <div className="pt-3 border-t border-slate-100 flex items-center justify-end gap-2">
                 <button
                   type="button"
@@ -657,6 +875,17 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
             </form>
           </div>
         </div>
+      )}
+
+      {/* Syllabus Review & Verification */}
+      {reviewTarget && (
+        <SyllabusReviewModal
+          syllabus={reviewTarget}
+          subjectName={reviewMode === 'edit' ? editingSubject?.name ?? '' : newName}
+          courseCode={reviewMode === 'edit' ? editingSubject?.code ?? '' : newCode}
+          onCancel={() => setReviewTarget(null)}
+          onConfirm={handleConfirmReview}
+        />
       )}
     </div>
   );

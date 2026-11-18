@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { PageTab, Subject, Deadline, TimetableBlock, ChatMessage, StudentProfile, SubjectPriority } from './types';
+import { PageTab, Subject, Deadline, TimetableBlock, ChatMessage, StudentProfile, SubjectPriority, ExamSchedule, StudyAvailability } from './types';
 import { 
   initialSubjects, 
   initialDeadlines, 
@@ -9,6 +9,7 @@ import {
   initialProfile 
 } from './data/mockData';
 import { Sidebar } from './components/Sidebar';
+import { ExamIntelligenceView } from './components/ExamIntelligenceView';
 import { Header } from './components/Header';
 import { DashboardView } from './components/DashboardView';
 import { SubjectsView } from './components/SubjectsView';
@@ -17,6 +18,9 @@ import { AIAssistantView } from './components/AIAssistantView';
 import { QuizGeneratorView } from './components/QuizGeneratorView';
 import { SettingsView } from './components/SettingsView';
 import { FocusTimerModal } from './components/FocusTimerModal';
+import { migrateSubjects } from './utils/syllabus';
+import { normalizeExamSchedule } from './utils/dateSheet';
+import { DEFAULT_AVAILABILITY, normalizeAvailability } from './utils/examEngine';
 
 // Helper for safe localStorage loading
 function loadFromStorage<T>(key: string, fallback: T): T {
@@ -38,8 +42,10 @@ export default function App() {
   // App Data State with localStorage initialization & data cleanup
   const [subjects, setSubjects] = useState<Subject[]>(() => {
     const loaded = loadFromStorage<Subject[]>('studentos_subjects', initialSubjects);
+    // Safely migrate older subject records (missing syllabus/fields) without erasing data
+    const migrated = migrateSubjects(loaded, initialSubjects);
     // Remove temporary test subject "Storage Test Updated" if present in storage or state
-    return loaded.filter(s => s.name !== "Storage Test Updated" && s.name !== "Storage Test" && s.code !== "TEST");
+    return migrated.filter(s => s.name !== "Storage Test Updated" && s.name !== "Storage Test" && s.code !== "TEST");
   });
 
   const [deadlines, setDeadlines] = useState<Deadline[]>(() => 
@@ -63,6 +69,15 @@ export default function App() {
 
   const [assistantMessages, setAssistantMessages] = useState<ChatMessage[]>(() => 
     loadFromStorage<ChatMessage[]>('studentos_messages', initialAssistantMessages)
+  );
+
+  // Phase 2 Exam Intelligence state (safe, version-tolerant loaders)
+  const [examSchedule, setExamSchedule] = useState<ExamSchedule>(() =>
+    normalizeExamSchedule(loadFromStorage('studentos_exam_schedule', { entries: [] }))
+  );
+
+  const [availability, setAvailability] = useState<StudyAvailability>(() =>
+    normalizeAvailability(loadFromStorage('studentos_study_availability', DEFAULT_AVAILABILITY))
   );
 
   const [profile, setProfile] = useState<StudentProfile>(() => {
@@ -137,6 +152,22 @@ export default function App() {
     }
   }, [profile]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('studentos_exam_schedule', JSON.stringify(examSchedule));
+    } catch (e) {
+      console.warn('Storage error for exam schedule:', e);
+    }
+  }, [examSchedule]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('studentos_study_availability', JSON.stringify(availability));
+    } catch (e) {
+      console.warn('Storage error for study availability:', e);
+    }
+  }, [availability]);
+
   // Handlers
   const handleToggleDeadline = (deadlineId: string) => {
     setDeadlines(prev => prev.map(d => {
@@ -167,6 +198,25 @@ export default function App() {
 
   const handleAddSubject = (newSubject: Subject) => {
     setSubjects(prev => [newSubject, ...prev]);
+  };
+
+  // Creates a missing subject from a date-sheet entry and returns it for matching.
+  const handleCreateSubjectFromExam = (name: string, code: string): Subject => {
+    const subject: Subject = {
+      id: `sub-${Date.now()}`,
+      code: (code || name).trim().toUpperCase(),
+      name: name.trim() || code.trim().toUpperCase(),
+      credits: 3,
+      professor: 'Faculty Instructor',
+      difficulty: 'Intermediate',
+      confidence: 70,
+      priority: 'Medium',
+      color: '#6366F1',
+      accentBg: '#EEF2FF',
+      topics: [],
+    };
+    setSubjects(prev => [subject, ...prev]);
+    return subject;
   };
 
   const handleEditSubject = (updatedSubject: Subject) => {
@@ -232,6 +282,8 @@ export default function App() {
     localStorage.removeItem('studentos_timetable');
     localStorage.removeItem('studentos_messages');
     localStorage.removeItem('studentos_profile');
+    localStorage.removeItem('studentos_exam_schedule');
+    localStorage.removeItem('studentos_study_availability');
 
     setSubjects(initialSubjects);
     setDeadlines(initialDeadlines);
@@ -239,6 +291,8 @@ export default function App() {
     setTimetableBlocks(initialTimetableBlocks);
     setAssistantMessages(initialAssistantMessages);
     setProfile(initialProfile);
+    setExamSchedule({ entries: [] });
+    setAvailability({ ...DEFAULT_AVAILABILITY });
   };
 
   return (
@@ -272,6 +326,8 @@ export default function App() {
               onToggleDeadline={handleToggleDeadline}
               weeklyActivity={weeklyActivity}
               profile={profile}
+              examSchedule={examSchedule}
+              availability={availability}
               onNavigateTab={setCurrentTab}
               onStartFocus={handleStartFocus}
             />
@@ -299,6 +355,8 @@ export default function App() {
               onStartFocus={handleStartFocus}
               onNavigateTab={setCurrentTab}
               defaultFocusDuration={profile.pomodoroWorkMinutes || 45}
+              examSchedule={examSchedule}
+              availability={availability}
             />
           )}
 
@@ -318,6 +376,19 @@ export default function App() {
               initialSubjectId={quizSubjectId}
               onNavigateTab={setCurrentTab}
               onAddWeakTopicToPlanner={handleAddWeakTopicToPlanner}
+            />
+          )}
+
+          {currentTab === 'exam' && (
+            <ExamIntelligenceView
+              subjects={subjects}
+              examSchedule={examSchedule}
+              availability={availability}
+              onSaveSchedule={setExamSchedule}
+              onSaveAvailability={setAvailability}
+              onUpdateSubject={handleEditSubject}
+              onCreateSubject={handleCreateSubjectFromExam}
+              onNavigateTab={setCurrentTab}
             />
           )}
 

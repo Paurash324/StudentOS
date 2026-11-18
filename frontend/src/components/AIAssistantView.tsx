@@ -16,6 +16,7 @@ import {
 import { Subject, ChatMessage } from '../types';
 import { askAcademicAssistant } from '../services/aiService';
 import { StudentOSLogo } from './StudentOSLogo';
+import { countSyllabusTopics, toSyllabusContextPayload } from '../utils/syllabus';
 
 export type AnswerStyle = 'quick' | 'exam_ready' | 'detailed';
 
@@ -218,7 +219,7 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
   userName = 'Student',
 }) => {
   const [inputQuery, setInputQuery] = useState('');
-  const [selectedSubjectContext, setSelectedSubjectContext] = useState<string>('All Subjects');
+  const [selectedSubjectId, setSelectedSubjectId] = useState<string>('all');
   const [answerStyle, setAnswerStyle] = useState<AnswerStyle>('exam_ready');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -229,6 +230,13 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, isLoading]);
+
+  const selectedSubject = subjects.find(s => s.id === selectedSubjectId);
+  const selectedSubjectContext = selectedSubject
+    ? `${selectedSubject.code} ${selectedSubject.name}`
+    : 'All Subjects';
+  const syllabusPayload = toSyllabusContextPayload(selectedSubject?.syllabus);
+  const syllabusTopicCount = countSyllabusTopics(selectedSubject?.syllabus);
 
   const suggestedPrompts = [
     "Explain Dijkstra's Algorithm vs Bellman-Ford simply with an example",
@@ -261,7 +269,13 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
         text: m.content
       }));
 
-      const result = await askAcademicAssistant(query, selectedSubjectContext, history, answerStyle);
+      const result = await askAcademicAssistant(
+        query,
+        selectedSubjectContext,
+        history,
+        answerStyle,
+        syllabusPayload
+      );
 
       const assistantMessage: ChatMessage = {
         id: `assistant-${Date.now()}`,
@@ -315,14 +329,14 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
           </label>
           <div className="relative">
             <select
-              value={selectedSubjectContext}
-              onChange={(e) => setSelectedSubjectContext(e.target.value)}
+              value={selectedSubjectId}
+              onChange={(e) => setSelectedSubjectId(e.target.value)}
               className="appearance-none bg-white border border-[#E5E9F2] rounded-xl pl-3 pr-8 py-2 text-xs font-semibold text-slate-800 shadow-2xs focus:outline-none focus:border-indigo-500 cursor-pointer"
             >
-              <option value="All Subjects">All Subjects</option>
+              <option value="all">All Subjects</option>
               {subjects.map(s => (
-                <option key={s.id} value={`${s.code} ${s.name}`}>
-                  {s.code}: {s.name}
+                <option key={s.id} value={s.id}>
+                  {s.code}: {s.name}{s.syllabus?.status === 'verified' ? ' ✓' : ''}
                 </option>
               ))}
             </select>
@@ -338,6 +352,27 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Syllabus grounding status for the selected subject */}
+      {selectedSubject && (
+        <div className={`p-3 rounded-xl border text-xs flex items-start sm:items-center gap-2 font-sans ${
+          syllabusPayload
+            ? 'bg-emerald-50/70 border-emerald-200 text-emerald-800'
+            : 'bg-amber-50/70 border-amber-200 text-amber-900'
+        }`}>
+          <BookOpenCheck className="w-4 h-4 shrink-0" />
+          {syllabusPayload ? (
+            <span>
+              Grounded in <strong className="font-semibold">verified syllabus</strong> for {selectedSubject.code} ·{' '}
+              {selectedSubject.syllabus?.units.length ?? 0} units, {syllabusTopicCount} topics. Answers prioritise your curriculum and separate general knowledge where needed.
+            </span>
+          ) : (
+            <span>
+              <strong className="font-semibold">No syllabus provided</strong> for {selectedSubject.code}. Answers use general subject knowledge and will not claim topics are part of your official curriculum. Add a syllabus from Edit Subject to ground the tutor.
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Answer Style Selector Strip */}
       <div className="bg-white border border-[#E5E9F2] rounded-2xl p-3.5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 font-sans">

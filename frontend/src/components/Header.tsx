@@ -29,6 +29,7 @@ export const Header: React.FC<HeaderProps> = ({
       case 'planner': return 'Smart Planner';
       case 'assistant': return 'AI Study Assistant';
       case 'quiz': return 'Quiz Generator';
+      case 'exam': return 'Exam Intelligence';
       case 'settings': return 'Settings & Preferences';
       default: return 'Dashboard';
     }

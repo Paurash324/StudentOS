@@ -13,10 +13,17 @@ import {
   Calendar, 
   AlertCircle, 
   Play,
-  Timer
+  Timer,
+  Pin,
+  PinOff,
+  Pencil,
+  X,
+  GraduationCap,
+  Info
 } from 'lucide-react';
-import { Subject, TimetableBlock, SubjectPriority, PageTab } from '../types';
+import { ExamSchedule, StudyAvailability, Subject, TimetableBlock, SubjectPriority, PageTab } from '../types';
 import { computeSubjectScore } from '../utils/priority';
+import { generateExamPlan, getEligibleExams, timeRangeFromStart } from '../utils/examEngine';
 import confetti from 'canvas-confetti';
 
 interface SmartPlannerViewProps {
@@ -28,6 +35,17 @@ interface SmartPlannerViewProps {
   onStartFocus: (taskName?: string) => void;
   onNavigateTab: (tab: PageTab) => void;
   defaultFocusDuration?: number;
+  examSchedule: ExamSchedule;
+  availability: StudyAvailability;
+}
+
+function parseStartMinutes(range: string): number {
+  const start = range.split('–')[0]?.trim() ?? '';
+  const match = start.match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!match) return 8 * 60 + 30;
+  let hour = Number(match[1]) % 12;
+  if (match[3].toUpperCase() === 'PM') hour += 12;
+  return hour * 60 + Number(match[2]);
 }
 
 // Format 12-hour AM/PM time
@@ -109,11 +127,13 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
   onStartFocus,
   onNavigateTab,
   defaultFocusDuration = 45,
+  examSchedule,
+  availability,
 }) => {
   // Persisted state in localStorage to preserve selections across page reloads
   const [availableHours, setAvailableHours] = useState<number>(() => {
     const saved = localStorage.getItem('studentos_planner_hours');
-    return saved ? parseFloat(saved) : 3.0;
+    return saved ? parseFloat(saved) : availability.dailyHours;
   });
 
   const [focusGoal, setFocusGoal] = useState<'exam' | 'balanced' | 'deepWork'>(() => {
@@ -128,6 +148,12 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
 
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [generationNotice, setGenerationNotice] = useState<string | null>(null);
+  const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
+  const [editStart, setEditStart] = useState<string>('08:30');
+  const [editDuration, setEditDuration] = useState<number>(45);
+
+  const eligibleExams = getEligibleExams(subjects, examSchedule);
+  const examAware = eligibleExams.length > 0;
 
   // Sync state to localStorage
   useEffect(() => {
@@ -168,10 +194,35 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
   const totalStudyBlocks = studyBlocks.length;
   const plannedStudyMinutes = studyBlocks.reduce((sum, b) => sum + b.durationMinutes, 0);
 
-  // Strictly bounded algorithmic schedule generator
+  // Exam-aware deterministic generation (uses verified date sheet + PYQ weights)
   const handleGenerateSchedule = () => {
     setIsGenerating(true);
     setGenerationNotice(null);
+
+    if (examAware) {
+      setTimeout(() => {
+        const plan = generateExamPlan({
+          subjects,
+          schedule: examSchedule,
+          availability: {
+            ...availability,
+            dailyHours: availableHours,
+            sessionMinutes: focusDuration,
+          },
+          existingBlocks: timetableBlocks,
+          goal: focusGoal,
+        });
+        onUpdateBlocks(plan.blocks);
+        setIsGenerating(false);
+        setGenerationNotice(plan.notes.join(' '));
+        try {
+          confetti({ particleCount: 50, spread: 50, origin: { y: 0.6 } });
+        } catch (e) {
+          // Safe fallback
+        }
+      }, 350);
+      return;
+    }
 
     setTimeout(() => {
       // 1. Calculate strictly bounded study session durations
@@ -191,6 +242,34 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
       // 3. Distribute sessions among top subjects
       const assignedSubjects = distributeSubjects(rankedSubjects, sessionDurations.length);
 
+      // 3b. Build each subject's topic pool from the verified syllabus when available,
+      // falling back to the tracked topic list for subjects without a syllabus.
+      const topicPools: Record<string, { id: string; title: string; unitTitle?: string; completed: boolean }[]> = {};
+      subjects.forEach(sub => {
+        if (sub.syllabus?.status === 'verified' && sub.syllabus.units.length > 0) {
+          topicPools[sub.id] = sub.syllabus.units.flatMap(unit =>
+            unit.topics.map(topic => {
+              const tracked = sub.topics.find(
+                t => t.title.trim().toLowerCase() === topic.name.trim().toLowerCase()
+              );
+              return {
+                id: tracked?.id ?? `syl-${unit.id}-${topic.id}`,
+                title: topic.name,
+                unitTitle: unit.unitNumber ? `Unit ${unit.unitNumber}: ${unit.title}` : unit.title,
+                completed: tracked?.completed ?? false,
+              };
+            })
+          );
+        } else {
+          topicPools[sub.id] = sub.topics.map(topic => ({
+            id: topic.id,
+            title: topic.title,
+            unitTitle: topic.unitTitle,
+            completed: topic.completed,
+          }));
+        }
+      });
+
       // Track how many sessions each subject receives
       const subjectSessionCount: Record<string, number> = {};
 
@@ -209,25 +288,48 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
         const countSoFar = subjectSessionCount[subId] || 0;
         subjectSessionCount[subId] = countSoFar + 1;
 
-        const uncompletedTopics = sub.topics.filter(t => !t.completed);
+        const pool = topicPools[subId] || [];
+        const pendingTopics = pool.filter(t => !t.completed);
         let topicTitle = "";
+        let unitTitle: string | undefined;
+        let topicId: string | undefined;
         let blockType: TimetableBlock['blockType'] = 'Deep Work';
 
         if (countSoFar === 0) {
-          topicTitle = uncompletedTopics[0]?.title || sub.topics[0]?.title || "Core Foundations & Theory";
+          const target = pendingTopics[0];
+          topicTitle = target?.title || pool[0]?.title || "Core Foundations & Theory";
+          unitTitle = target?.unitTitle ?? pool[0]?.unitTitle;
+          topicId = target?.id ?? pool[0]?.id;
           blockType = focusGoal === 'balanced' ? 'Problem Solving' : 'Deep Work';
         } else if (countSoFar === 1) {
-          topicTitle = uncompletedTopics[1]?.title || uncompletedTopics[0]?.title || sub.topics[1]?.title || "Applied Proofs & Problem Sets";
+          const target = pendingTopics[1] || pendingTopics[0];
+          topicTitle = target?.title || pool[1]?.title || pool[0]?.title || "Applied Proofs & Problem Sets";
+          unitTitle = target?.unitTitle ?? pool[1]?.unitTitle ?? pool[0]?.unitTitle;
+          topicId = target?.id ?? pool[1]?.id ?? pool[0]?.id;
           blockType = 'Active Recall';
         } else {
-          topicTitle = `Comprehensive Review & Diagnostic Drills (${sub.code})`;
-          blockType = 'Review';
+          const target = pendingTopics[countSoFar];
+          if (target) {
+            topicTitle = `${target.title} — Practice & Retrieval`;
+            unitTitle = target.unitTitle;
+            topicId = target.id;
+            blockType = 'Review';
+          } else {
+            // Only fall back to revision once every syllabus topic is complete.
+            topicTitle = `Comprehensive Revision & Diagnostic Drills (${sub.code})`;
+            blockType = 'Review';
+          }
         }
 
         // Shorter remainder session adjustment
         if (duration <= 25 && sessionDurations.length > 1 && i === sessionDurations.length - 1) {
+          const rapidTarget = pendingTopics.find(t => t.id !== topicId) || pendingTopics[0];
           blockType = 'Review';
-          topicTitle = `Targeted Rapid Recall: ${sub.code}`;
+          topicTitle = rapidTarget
+            ? `Targeted Rapid Recall: ${rapidTarget.title}`
+            : `Targeted Rapid Recall: ${sub.code}`;
+          unitTitle = rapidTarget?.unitTitle;
+          topicId = rapidTarget?.id;
         }
 
         const sessionStart = new Date(cursor);
@@ -241,6 +343,8 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
           subjectCode: sub.code,
           subjectName: sub.name,
           topic: topicTitle,
+          unitTitle,
+          topicId,
           blockType,
           durationMinutes: duration,
           completed: false,
@@ -309,16 +413,60 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
     }, 350);
   };
 
+  const handleTogglePin = (blockId: string) => {
+    onUpdateBlocks(
+      timetableBlocks.map(block =>
+        block.id === blockId ? { ...block, pinned: !block.pinned } : block
+      )
+    );
+  };
+
+  const handleStartEdit = (block: TimetableBlock) => {
+    const startMinutes = parseStartMinutes(block.timeRange);
+    const hours = Math.floor(startMinutes / 60);
+    const minutes = startMinutes % 60;
+    setEditStart(`${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`);
+    setEditDuration(block.durationMinutes);
+    setEditingBlockId(block.id);
+  };
+
+  const handleSaveEdit = (blockId: string) => {
+    const parts = editStart.split(':');
+    const startMinutes = Number(parts[0]) * 60 + Number(parts[1]);
+    if (!Number.isFinite(startMinutes)) return;
+    onUpdateBlocks(
+      timetableBlocks.map(block =>
+        block.id === blockId
+          ? {
+              ...block,
+              durationMinutes: editDuration,
+              timeRange: timeRangeFromStart(startMinutes, editDuration),
+              pinned: true,
+            }
+          : block
+      )
+    );
+    setEditingBlockId(null);
+  };
+
   return (
     <div className="space-y-8 pb-12 font-sans">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="font-display text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
+          <h1 className="font-display text-2xl sm:text-3xl font-extrabold text-slate-900 tracking-tight flex items-center gap-2">
             Smart Planner
+            {examAware && (
+              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-md px-1.5 py-0.5">
+                <GraduationCap className="w-3 h-3" />
+                Exam-aware
+              </span>
+            )}
           </h1>
           <p className="font-sans text-slate-500 text-sm mt-1 leading-relaxed">
-            Algorithmic study scheduling based on your subject priorities, confidence deficits, and exam dates.
+            {examAware
+              ? 'Deterministic allocation across every verified exam, using syllabus gaps, confidence, and historical PYQ counts.'
+              : 'Algorithmic study scheduling based on your subject priorities, confidence deficits, and exam dates. Add a verified date sheet for exam-aware allocation.'}
           </p>
         </div>
 
@@ -328,7 +476,7 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
           className="font-sans flex items-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-indigo-600 rounded-xl hover:bg-indigo-700 active:scale-[0.99] transition-all shadow-sm shadow-indigo-600/30 whitespace-nowrap self-start sm:self-auto disabled:opacity-70 cursor-pointer"
         >
           <Sparkles className="w-4 h-4" />
-          <span>{isGenerating ? "Optimizing Schedule..." : "Generate My Schedule"}</span>
+          <span>{isGenerating ? "Optimizing Schedule..." : examAware ? "Generate Exam Schedule" : "Generate My Schedule"}</span>
         </button>
       </div>
 
@@ -602,14 +750,15 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
               block.blockType === 'Deep Work' ? 'text-indigo-700 bg-indigo-50 border-indigo-200' :
               block.blockType === 'Problem Solving' ? 'text-sky-700 bg-sky-50 border-sky-200' :
               block.blockType === 'Active Recall' ? 'text-purple-700 bg-purple-50 border-purple-200' :
+              block.blockType === 'PYQ Practice' ? 'text-amber-700 bg-amber-50 border-amber-200' :
               'text-slate-700 bg-slate-50 border-slate-200';
 
             return (
+              <React.Fragment key={block.id}>
               <div 
-                key={block.id}
                 className={`bg-white border border-[#E5E9F2] rounded-2xl p-5 shadow-xs hover:shadow-sm transition-all flex flex-col sm:flex-row sm:items-center justify-between gap-4 ${
                   block.completed ? 'bg-slate-50/70 opacity-80' : ''
-                }`}
+                } ${block.pinned ? 'ring-1 ring-indigo-200' : ''}`}
               >
                 <div className="flex items-start sm:items-center gap-3.5 min-w-0">
                   <button
@@ -637,12 +786,29 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
                       <span className="text-xs text-slate-500 hidden md:inline font-sans">
                         {block.subjectName}
                       </span>
+                      {block.pinned && (
+                        <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200 rounded-md px-1.5 py-0.5">
+                          <Pin className="w-2.5 h-2.5" />
+                          Pinned
+                        </span>
+                      )}
                     </div>
                     <p className={`text-sm mt-1 truncate ${
                       block.completed ? 'line-through text-slate-400 font-normal font-sans' : 'font-display font-bold text-slate-900'
                     }`}>
                       {block.topic}
                     </p>
+                    {block.unitTitle && (
+                      <span className="text-[10px] text-slate-400 mt-0.5 block truncate">
+                        {block.unitTitle}
+                      </span>
+                    )}
+                    {block.reason && (
+                      <p className="text-[10px] text-slate-400 mt-1 flex items-start gap-1 max-w-xl">
+                        <Info className="w-3 h-3 shrink-0 mt-0.5" />
+                        <span>{block.reason}</span>
+                      </p>
+                    )}
                   </div>
                 </div>
 
@@ -651,6 +817,24 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
                     {block.timeRange} ({block.durationMinutes}m)
                   </span>
                   
+                  <button
+                    onClick={() => handleTogglePin(block.id)}
+                    className={`p-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
+                      block.pinned
+                        ? 'text-indigo-600 bg-indigo-50 hover:bg-indigo-100'
+                        : 'text-slate-400 hover:text-indigo-600 hover:bg-slate-100'
+                    }`}
+                    title={block.pinned ? 'Unpin session' : 'Pin session (kept on regeneration)'}
+                  >
+                    {block.pinned ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
+                  </button>
+                  <button
+                    onClick={() => handleStartEdit(block)}
+                    className="p-1.5 text-slate-400 hover:text-indigo-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer shrink-0"
+                    title="Adjust session time or duration"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                  </button>
                   {!block.completed && (
                     <button
                       onClick={() => onStartFocus(`${block.subjectCode}: ${block.topic}`)}
@@ -662,6 +846,49 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
                   )}
                 </div>
               </div>
+
+              {editingBlockId === block.id && (
+                <div className="mt-2 p-3 rounded-xl border border-indigo-200 bg-indigo-50/50 flex flex-wrap items-end gap-3 font-sans">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-semibold text-slate-600 uppercase">Start time</label>
+                    <input
+                      type="time"
+                      value={editStart}
+                      onChange={(e) => setEditStart(e.target.value)}
+                      className="px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-semibold text-slate-600 uppercase">Duration</label>
+                    <select
+                      value={editDuration}
+                      onChange={(e) => setEditDuration(Number(e.target.value))}
+                      className="px-2 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:outline-none cursor-pointer"
+                    >
+                      {[15, 25, 45, 60, 90].map(minutes => (
+                        <option key={minutes} value={minutes}>{minutes} min</option>
+                      ))}
+                    </select>
+                  </div>
+                  <button
+                    onClick={() => handleSaveEdit(block.id)}
+                    className="px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors cursor-pointer"
+                  >
+                    Save
+                  </button>
+                  <button
+                    onClick={() => setEditingBlockId(null)}
+                    className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-white rounded-lg transition-colors cursor-pointer"
+                    title="Cancel"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                  <span className="text-[10px] text-indigo-700/70 ml-auto">
+                    Saving this adjustment pins the session so regeneration keeps it.
+                  </span>
+                </div>
+              )}
+              </React.Fragment>
             );
           })}
         </div>
