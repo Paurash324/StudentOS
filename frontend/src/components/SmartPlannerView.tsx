@@ -24,6 +24,7 @@ import {
 import { ExamSchedule, StudyAvailability, Subject, TimetableBlock, SubjectPriority, PageTab } from '../types';
 import { computeSubjectScore } from '../utils/priority';
 import { generateExamPlan, getEligibleExams, timeRangeFromStart } from '../utils/examEngine';
+import { resolveBlocksForDisplay } from '../utils/studentState';
 import confetti from 'canvas-confetti';
 
 interface SmartPlannerViewProps {
@@ -188,8 +189,13 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
   // Hard maximum budget calculation
   const budgetMinutes = Math.round(availableHours * 60);
 
+  // Sessions are rendered against the current subject catalog. Pending or
+  // historical blocks for deleted subjects are preserved in storage but never
+  // shown as part of the active plan.
+  const displayBlocks = resolveBlocksForDisplay(timetableBlocks, subjects);
+
   // Filter study sessions vs break intervals
-  const studyBlocks = timetableBlocks.filter(b => b.blockType !== 'Break');
+  const studyBlocks = displayBlocks.filter(b => b.blockType !== 'Break');
   const completedBlocks = studyBlocks.filter(b => b.completed).length;
   const totalStudyBlocks = studyBlocks.length;
   const plannedStudyMinutes = studyBlocks.reduce((sum, b) => sum + b.durationMinutes, 0);
@@ -717,7 +723,7 @@ export const SmartPlannerView: React.FC<SmartPlannerViewProps> = ({
         </div>
 
         <div className="space-y-3">
-          {timetableBlocks.map((block) => {
+          {displayBlocks.map((block) => {
             const isBreak = block.blockType === 'Break';
 
             if (isBreak) {

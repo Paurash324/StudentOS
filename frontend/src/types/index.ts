@@ -245,6 +245,7 @@ export interface TodayTask {
 
 export interface Deadline {
   id: string;
+  subjectId?: string;
   subjectCode: string;
   title: string;
   dueDate: string;
@@ -253,6 +254,8 @@ export interface Deadline {
   urgency: 'high' | 'medium' | 'normal';
   weight: string;
   completed: boolean;
+  /** Where the record came from: a verified date sheet entry or a saved milestone. */
+  source?: 'exam-sheet' | 'manual';
 }
 
 export interface DailyActivity {
@@ -267,6 +270,8 @@ export interface TimetableBlock {
   id: string;
   day: string;
   timeRange: string;
+  /** Stable link to the subject. Display names/codes are resolved from active subjects. */
+  subjectId?: string;
   subjectCode: string;
   subjectName: string;
   topic: string;
@@ -278,6 +283,18 @@ export interface TimetableBlock {
   reason?: string;
   pinned?: boolean;
   generatedBy?: 'exam-engine' | 'planner' | 'manual';
+}
+
+/** A genuine record of a study session the student completed. */
+export interface StudyLogEntry {
+  id: string;
+  date: string; // YYYY-MM-DD (local calendar day)
+  subjectId?: string;
+  subjectCode: string;
+  subjectName: string;
+  minutes: number;
+  blockId?: string;
+  completedAt: string;
 }
 
 export interface ChatMessage {

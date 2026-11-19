@@ -1,10 +1,10 @@
 import React from 'react';
-import { 
-  LayoutDashboard, 
-  BookOpen, 
-  CalendarRange, 
-  Sparkles, 
-  HelpCircle, 
+import {
+  LayoutDashboard,
+  BookOpen,
+  CalendarRange,
+  Sparkles,
+  HelpCircle,
   Settings,
   ChevronRight,
   Menu,
@@ -20,6 +20,10 @@ interface SidebarProps {
   profile: StudentProfile;
   mobileOpen: boolean;
   onCloseMobile: () => void;
+  /** Genuine completed study minutes today. */
+  todayStudyMinutes?: number;
+  /** Genuine consecutive active-day streak. */
+  studyStreak?: number;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -28,7 +32,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
   profile,
   mobileOpen,
   onCloseMobile,
+  todayStudyMinutes = 0,
+  studyStreak = 0,
 }) => {
+  const dailyGoalHours = profile.dailyGoalHours || 5;
+  const studiedHours = todayStudyMinutes / 60;
+  const goalPercent = Math.min(100, Math.round((studiedHours / dailyGoalHours) * 100));
   const navItems = [
     { id: 'dashboard' as PageTab, label: 'Dashboard', icon: LayoutDashboard },
     { id: 'subjects' as PageTab, label: 'My Subjects', icon: BookOpen },
@@ -48,7 +57,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     <>
       {/* Mobile Backdrop */}
       {mobileOpen && (
-        <div 
+        <div
           className="fixed inset-0 bg-slate-900/30 z-40 md:hidden backdrop-blur-xs transition-opacity"
           onClick={onCloseMobile}
           aria-hidden="true"
@@ -56,7 +65,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
 
       {/* Sidebar Container */}
-      <aside 
+      <aside
         className={`fixed top-0 bottom-0 left-0 z-50 w-72 bg-white border-r border-[#E5E9F2] flex flex-col transition-transform duration-200 ease-in-out md:translate-x-0 ${
           mobileOpen ? 'translate-x-0 shadow-xl' : '-translate-x-full md:translate-x-0'
         }`}
@@ -74,7 +83,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               </span>
             </div>
           </div>
-          <button 
+          <button
             onClick={onCloseMobile}
             className="md:hidden p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 transition-colors"
             aria-label="Close menu"
@@ -102,10 +111,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 }`}
               >
                 <div className="flex items-center gap-3">
-                  <Icon 
+                  <Icon
                     className={`w-4.5 h-4.5 transition-colors ${
                       isActive ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-600'
-                    }`} 
+                    }`}
                   />
                   <span>{item.label}</span>
                 </div>
@@ -121,18 +130,24 @@ export const Sidebar: React.FC<SidebarProps> = ({
         <div className="px-4 py-3.5 mx-4 mb-4 rounded-xl bg-slate-50/90 border border-slate-200/80">
           <div className="flex items-center justify-between text-xs mb-1.5 font-sans">
             <span className="font-semibold text-slate-700">Daily Study Goal</span>
-            <span className="font-display font-bold text-slate-900 tabular-nums">4.5 / {profile.dailyGoalHours?.toFixed(1) || '5.0'}h</span>
+            <span className="font-display font-bold text-slate-900 tabular-nums">
+              {studiedHours.toFixed(1)} / {dailyGoalHours.toFixed(1)}h
+            </span>
           </div>
           <div className="w-full h-1.5 bg-slate-200/80 rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-indigo-600 rounded-full transition-all duration-300" 
-              style={{ width: `${Math.min(100, Math.round((4.5 / (profile.dailyGoalHours || 5)) * 100))}%` }} 
+            <div
+              className="h-full bg-indigo-600 rounded-full transition-all duration-300"
+              style={{ width: `${goalPercent}%` }}
             />
           </div>
           <div className="mt-2 text-[11px] text-slate-500 flex items-center justify-between font-sans">
-            <span>Streak: <strong className="font-display font-semibold text-slate-700">12 days</strong></span>
+            <span>
+              Streak: <strong className="font-display font-semibold text-slate-700">
+                {studyStreak} day{studyStreak === 1 ? '' : 's'}
+              </strong>
+            </span>
             <span className="font-display font-semibold text-indigo-700">
-              {Math.min(100, Math.round((4.5 / (profile.dailyGoalHours || 5)) * 100))}% done
+              {goalPercent}% done
             </span>
           </div>
         </div>

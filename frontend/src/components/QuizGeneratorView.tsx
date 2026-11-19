@@ -27,7 +27,7 @@ interface QuizGeneratorViewProps {
 
 export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({
   subjects,
-  initialSubjectId = "cs301",
+  initialSubjectId = "",
   onNavigateTab,
   onAddWeakTopicToPlanner,
 }) => {
@@ -83,9 +83,13 @@ export const QuizGeneratorView: React.FC<QuizGeneratorViewProps> = ({
     : [];
 
   const handleGenerateQuiz = async () => {
+    if (!currentSubject) {
+      setGenerationError("Add a subject first, then generate a quiz for it.");
+      return;
+    }
     setIsGenerating(true);
     setGenerationError(null);
-    const subjectCode = currentSubject ? currentSubject.code : "CS 301";
+    const subjectCode = currentSubject.code;
 
     const syllabusScope = buildQuizSyllabusExcerpt(
       currentSubject,

@@ -1,12 +1,6 @@
-import React, { useState, useEffect } from 'react';
-import { PageTab, Subject, Deadline, TimetableBlock, ChatMessage, StudentProfile, SubjectPriority, ExamSchedule, StudyAvailability } from './types';
-import { 
-  initialSubjects, 
-  initialDeadlines, 
-  weeklyStudyActivity, 
-  initialTimetableBlocks, 
-  initialProfile 
-} from './data/mockData';
+import React, { useEffect, useMemo, useState } from 'react';
+import { PageTab, Subject, Deadline, TimetableBlock, ChatMessage, StudentProfile, SubjectPriority, ExamSchedule, StudyAvailability, StudyLogEntry } from './types';
+import { initialProfile } from './data/mockData';
 import { Sidebar } from './components/Sidebar';
 import { ExamIntelligenceView } from './components/ExamIntelligenceView';
 import { Header } from './components/Header';
@@ -17,12 +11,29 @@ import { AIAssistantView } from './components/AIAssistantView';
 import { QuizGeneratorView } from './components/QuizGeneratorView';
 import { SettingsView } from './components/SettingsView';
 import { FocusTimerModal } from './components/FocusTimerModal';
-import { migrateSubjects } from './utils/syllabus';
 import { migrateChatMessages } from './utils/aiContext';
-import { normalizeExamSchedule } from './utils/dateSheet';
-import { DEFAULT_AVAILABILITY, normalizeAvailability } from './utils/examEngine';
+import { normalizeCode, normalizeExamSchedule } from './utils/dateSheet';
+import { DEFAULT_AVAILABILITY, localIsoDate, normalizeAvailability } from './utils/examEngine';
+import {
+  attachSubjectIds,
+  bootstrapStudentState,
+  buildUpcomingDeadlines,
+  buildWeeklyActivity,
+  computeStudyStreak,
+  deleteSubjectFromPlan,
+  getBrowserStorage,
+  renameSubjectInExamSchedule,
+  renameSubjectInPlan,
+  STUDENT_STATE_STORAGE_KEYS,
+  STUDENT_STATE_VERSION_KEY,
+  toggleSessionCompletion,
+} from './utils/studentState';
 
-// Helper for safe localStorage loading
+// Targeted migration runs once before React reads the store, so stale demo
+// records are removed before any view can render them.
+const bootstrap = bootstrapStudentState(getBrowserStorage());
+
+// Helper for safe localStorage loading of keys not owned by the plan state.
 function loadFromStorage<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
@@ -34,38 +45,30 @@ function loadFromStorage<T>(key: string, fallback: T): T {
   }
 }
 
+function persist(key: string, value: unknown, label: string): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (err) {
+    console.warn(`Storage error for ${label}:`, err);
+  }
+}
+
 export default function App() {
   // Navigation
   const [currentTab, setCurrentTab] = useState<PageTab>('dashboard');
   const [mobileNavOpen, setMobileNavOpen] = useState<boolean>(false);
 
-  // App Data State with localStorage initialization & data cleanup
-  const [subjects, setSubjects] = useState<Subject[]>(() => {
-    const loaded = loadFromStorage<Subject[]>('studentos_subjects', initialSubjects);
-    // Safely migrate older subject records (missing syllabus/fields) without erasing data
-    const migrated = migrateSubjects(loaded, initialSubjects);
-    // Remove temporary test subject "Storage Test Updated" if present in storage or state
-    return migrated.filter(s => s.name !== "Storage Test Updated" && s.name !== "Storage Test" && s.code !== "TEST");
-  });
-
-  const [deadlines, setDeadlines] = useState<Deadline[]>(() => 
-    loadFromStorage<Deadline[]>('studentos_deadlines', initialDeadlines)
-  );
-
-  const [weeklyActivity, setWeeklyActivity] = useState(() => 
-    loadFromStorage('studentos_activity', weeklyStudyActivity)
-  );
+  // Active subjects are the single source of truth for every dependent view.
+  const [subjects, setSubjects] = useState<Subject[]>(bootstrap.subjects);
+  const [deadlines, setDeadlines] = useState<Deadline[]>(bootstrap.deadlines);
 
   // Single unified source of truth for the scheduled focus sessions and breaks
-  const [timetableBlocks, setTimetableBlocks] = useState<TimetableBlock[]>(() => {
-    const loaded = loadFromStorage<TimetableBlock[]>('studentos_timetable', initialTimetableBlocks);
-    // If stored timetable has legacy 90m or 75m mock blocks from old demo data, upgrade to 45m initial blocks
-    const hasLegacyDurations = loaded.some(b => b.durationMinutes === 90 || b.durationMinutes === 75);
-    if (hasLegacyDurations && loaded.some(b => b.id === 'tt-1' || b.id === 'tt-2')) {
-      return initialTimetableBlocks;
-    }
-    return loaded;
-  });
+  const [timetableBlocks, setTimetableBlocks] = useState<TimetableBlock[]>(
+    bootstrap.timetableBlocks
+  );
+
+  // Genuine completed-session history powering the weekly activity chart.
+  const [studyLog, setStudyLog] = useState<StudyLogEntry[]>(bootstrap.studyLog);
 
   const [assistantMessages, setAssistantMessages] = useState<ChatMessage[]>(() =>
     // Drop the outdated hardcoded starter greeting but keep genuine conversation history.
@@ -92,81 +95,73 @@ export default function App() {
 
   // Focus Timer Modal State
   const [focusModalOpen, setFocusModalOpen] = useState<boolean>(false);
-  const [focusModalTask, setFocusModalTask] = useState<string>("CS 301: Algorithms & Data Structures");
+  const [focusModalTask, setFocusModalTask] = useState<string>(
+    bootstrap.subjects[0]
+      ? `${bootstrap.subjects[0].code}: ${bootstrap.subjects[0].name}`
+      : 'Deep Work Session'
+  );
 
   // Quiz context
-  const [quizSubjectId, setQuizSubjectId] = useState<string>("cs301");
+  const [quizSubjectId, setQuizSubjectId] = useState<string>(bootstrap.subjects[0]?.id ?? '');
 
-  // One-time cleanup for obsolete parallel tasks storage key if present
+  // Derived, honest data: deadlines only from verified dates / saved milestones,
+  // activity only from completed sessions.
+  const upcomingDeadlines = useMemo(
+    () => buildUpcomingDeadlines(subjects, examSchedule, deadlines, new Date()),
+    [subjects, examSchedule, deadlines]
+  );
+
+  const weeklyActivity = useMemo(
+    () => buildWeeklyActivity(studyLog, subjects, profile.dailyGoalHours || 5, new Date()),
+    [studyLog, subjects, profile.dailyGoalHours]
+  );
+
+  // Genuine totals for the focus timer's footer.
+  const todayStudyEntries = useMemo(
+    () => studyLog.filter(entry => entry.date === localIsoDate(new Date())),
+    [studyLog]
+  );
+  const todayStudyMinutes = todayStudyEntries.reduce((sum, entry) => sum + entry.minutes, 0);
+  const studyStreak = useMemo(() => computeStudyStreak(studyLog), [studyLog]);
+
+  // Keep the quiz subject valid as subjects are added, renamed or deleted.
   useEffect(() => {
-    if (localStorage.getItem('studentos_tasks')) {
-      localStorage.removeItem('studentos_tasks');
+    if (!subjects.some(subject => subject.id === quizSubjectId)) {
+      setQuizSubjectId(subjects[0]?.id ?? '');
     }
-  }, []);
+  }, [subjects, quizSubjectId]);
 
   // Sync state changes to localStorage
   useEffect(() => {
-    try {
-      localStorage.setItem('studentos_subjects', JSON.stringify(subjects));
-    } catch (e) {
-      console.warn("Storage error for subjects:", e);
-    }
+    persist('studentos_subjects', subjects, 'subjects');
   }, [subjects]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('studentos_deadlines', JSON.stringify(deadlines));
-    } catch (e) {
-      console.warn("Storage error for deadlines:", e);
-    }
+    persist('studentos_deadlines', deadlines, 'deadlines');
   }, [deadlines]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('studentos_activity', JSON.stringify(weeklyActivity));
-    } catch (e) {
-      console.warn("Storage error for weeklyActivity:", e);
-    }
-  }, [weeklyActivity]);
+    persist(STUDENT_STATE_STORAGE_KEYS.studyLog, studyLog, 'study log');
+  }, [studyLog]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('studentos_timetable', JSON.stringify(timetableBlocks));
-    } catch (e) {
-      console.warn("Storage error for timetableBlocks:", e);
-    }
+    persist('studentos_timetable', timetableBlocks, 'timetable');
   }, [timetableBlocks]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('studentos_messages', JSON.stringify(assistantMessages));
-    } catch (e) {
-      console.warn("Storage error for messages:", e);
-    }
+    persist('studentos_messages', assistantMessages, 'messages');
   }, [assistantMessages]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('studentos_profile', JSON.stringify(profile));
-    } catch (e) {
-      console.warn("Storage error for profile:", e);
-    }
+    persist('studentos_profile', profile, 'profile');
   }, [profile]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('studentos_exam_schedule', JSON.stringify(examSchedule));
-    } catch (e) {
-      console.warn('Storage error for exam schedule:', e);
-    }
+    persist('studentos_exam_schedule', examSchedule, 'exam schedule');
   }, [examSchedule]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem('studentos_study_availability', JSON.stringify(availability));
-    } catch (e) {
-      console.warn('Storage error for study availability:', e);
-    }
+    persist('studentos_study_availability', availability, 'study availability');
   }, [availability]);
 
   // Handlers
@@ -221,11 +216,28 @@ export default function App() {
   };
 
   const handleEditSubject = (updatedSubject: Subject) => {
-    setSubjects(prev => prev.map(s => s.id === updatedSubject.id ? updatedSubject : s));
+    const previous = subjects.find(s => s.id === updatedSubject.id);
+    const next = renameSubjectInPlan(updatedSubject, { subjects, timetableBlocks, deadlines });
+    setSubjects(next.subjects);
+    setTimetableBlocks(next.timetableBlocks);
+    setDeadlines(next.deadlines);
+    setExamSchedule(prev => renameSubjectInExamSchedule(prev, updatedSubject, previous));
   };
 
   const handleDeleteSubject = (subjectId: string) => {
-    setSubjects(prev => prev.filter(s => s.id !== subjectId));
+    const removed = subjects.find(s => s.id === subjectId);
+    const next = deleteSubjectFromPlan(subjectId, { subjects, timetableBlocks, deadlines });
+    setSubjects(next.subjects);
+    setTimetableBlocks(next.timetableBlocks);
+    setDeadlines(next.deadlines);
+    if (removed && quizSubjectId === removed.id) {
+      setQuizSubjectId(next.subjects[0]?.id ?? '');
+    }
+    if (removed && focusModalTask.startsWith(removed.code)) {
+      setFocusModalTask(
+        next.subjects[0] ? `${next.subjects[0].code}: ${next.subjects[0].name}` : 'Deep Work Session'
+      );
+    }
   };
 
   const handleChangeSubjectPriority = (subjectId: string, newPriority: SubjectPriority) => {
@@ -237,13 +249,15 @@ export default function App() {
     }));
   };
 
-  const handleToggleTimetableBlock = (blockId: string) => {
-    setTimetableBlocks(prev => prev.map(b => {
-      if (b.id === blockId) {
-        return { ...b, completed: !b.completed };
-      }
-      return b;
-    }));
+  const handleToggleBlock = (blockId: string) => {
+    const next = toggleSessionCompletion(blockId, { subjects, timetableBlocks, studyLog });
+    setTimetableBlocks(next.timetableBlocks);
+    setStudyLog(next.studyLog);
+  };
+
+  // Every writer of the timetable links sessions to the current subject IDs.
+  const handleUpdateBlocks = (blocks: TimetableBlock[]) => {
+    setTimetableBlocks(attachSubjectIds(blocks, subjects));
   };
 
   const handleStartFocus = (taskTitle?: string) => {
@@ -260,12 +274,14 @@ export default function App() {
 
   const handleAddWeakTopicToPlanner = (topicTitle: string, subjectCode: string) => {
     const focusDuration = profile.pomodoroWorkMinutes || 45;
+    const subject = subjects.find(s => normalizeCode(s.code) === normalizeCode(subjectCode));
     const newBlock: TimetableBlock = {
       id: `weak-review-${Date.now()}`,
       day: "Today",
       timeRange: "04:30 – 05:15 PM",
-      subjectCode: subjectCode,
-      subjectName: subjects.find(s => s.code === subjectCode)?.name || "Academic Review",
+      subjectId: subject?.id,
+      subjectCode: subject?.code ?? subjectCode,
+      subjectName: subject?.name ?? "Academic Review",
       topic: `Active Recall Drill: ${topicTitle}`,
       blockType: "Active Recall",
       durationMinutes: focusDuration,
@@ -285,15 +301,20 @@ export default function App() {
     localStorage.removeItem('studentos_profile');
     localStorage.removeItem('studentos_exam_schedule');
     localStorage.removeItem('studentos_study_availability');
+    localStorage.removeItem(STUDENT_STATE_STORAGE_KEYS.studyLog);
+    localStorage.removeItem(STUDENT_STATE_VERSION_KEY);
 
-    setSubjects(initialSubjects);
-    setDeadlines(initialDeadlines);
-    setWeeklyActivity(weeklyStudyActivity);
-    setTimetableBlocks(initialTimetableBlocks);
+    // Defaults are an empty, honest workspace — never the demo dataset.
+    setSubjects([]);
+    setDeadlines([]);
+    setTimetableBlocks([]);
+    setStudyLog([]);
     setAssistantMessages([]);
     setProfile(initialProfile);
     setExamSchedule({ entries: [] });
     setAvailability({ ...DEFAULT_AVAILABILITY });
+    setQuizSubjectId('');
+    setFocusModalTask('Deep Work Session');
   };
 
   return (
@@ -305,6 +326,8 @@ export default function App() {
         profile={profile}
         mobileOpen={mobileNavOpen}
         onCloseMobile={() => setMobileNavOpen(false)}
+        todayStudyMinutes={todayStudyMinutes}
+        studyStreak={studyStreak}
       />
 
       {/* 2. Main Content Wrapper */}
@@ -322,8 +345,8 @@ export default function App() {
             <DashboardView
               subjects={subjects}
               timetableBlocks={timetableBlocks}
-              onToggleBlock={handleToggleTimetableBlock}
-              deadlines={deadlines}
+              onToggleBlock={handleToggleBlock}
+              deadlines={upcomingDeadlines}
               onToggleDeadline={handleToggleDeadline}
               weeklyActivity={weeklyActivity}
               profile={profile}
@@ -350,8 +373,8 @@ export default function App() {
             <SmartPlannerView
               subjects={subjects}
               timetableBlocks={timetableBlocks}
-              onToggleBlock={handleToggleTimetableBlock}
-              onUpdateBlocks={setTimetableBlocks}
+              onToggleBlock={handleToggleBlock}
+              onUpdateBlocks={handleUpdateBlocks}
               onChangeSubjectPriority={handleChangeSubjectPriority}
               onStartFocus={handleStartFocus}
               onNavigateTab={setCurrentTab}
@@ -408,6 +431,8 @@ export default function App() {
         isOpen={focusModalOpen}
         onClose={() => setFocusModalOpen(false)}
         initialTaskName={focusModalTask}
+        sessionsCompletedToday={todayStudyEntries.length}
+        minutesToday={todayStudyMinutes}
       />
     </div>
   );

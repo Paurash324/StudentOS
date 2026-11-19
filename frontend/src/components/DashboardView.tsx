@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import { 
   BookOpen, 
   Clock, 
-  Target, 
-  Calendar, 
+  Target,  Calendar,
+  CalendarDays,
   CheckCircle2, 
   Circle, 
   ArrowUpRight, 
@@ -21,6 +21,7 @@ import { sortSubjectsByPriority } from '../utils/priority';
 import { buildStudyAllocations, getEligibleExams } from '../utils/examEngine';
 import { formatExamDate } from '../utils/dateSheet';
 import { subjectPyqCoverage } from '../utils/pyq';
+import { resolveBlocksForDisplay } from '../utils/studentState';
 
 export interface DashboardViewProps {
   subjects: Subject[];
@@ -74,8 +75,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     .sort((a, b) => a.daysRemaining - b.daysRemaining);
   const nextExam = upcomingExams[0];
 
-  // 4. Study sessions from Smart Planner timetable blocks (excluding breaks)
-  const studySessions = timetableBlocks.filter(b => b.blockType !== 'Break');
+  // 4. Study sessions from Smart Planner timetable blocks (excluding breaks).
+  //    Blocks are resolved against the active subjects so deleted or renamed
+  //    subjects can never render stale demo codes here.
+  const displayBlocks = resolveBlocksForDisplay(timetableBlocks, subjects);
+  const studySessions = displayBlocks.filter(b => b.blockType !== 'Break');
   const completedSessionsCount = studySessions.filter(s => s.completed).length;
   const pendingSessionsCount = studySessions.length - completedSessionsCount;
 
@@ -102,6 +106,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // 7. Dynamic time greeting and pending session description
   const currentHour = new Date().getHours();
+  const todayShortDay = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][new Date().getDay()];
   const timeGreeting = currentHour < 12 ? 'Good morning' : currentHour < 18 ? 'Good afternoon' : 'Good evening';
   const studentName = profile?.name || 'Student';
 
@@ -589,7 +594,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 {weeklyActivity.map((day) => {
                   const maxChartHours = 7.0;
                   const heightPercent = Math.min(100, (day.hours / maxChartHours) * 100);
-                  const isCurrentDay = day.shortDay === 'Wed';
+                  const isCurrentDay = day.shortDay === todayShortDay;
 
                   return (
                     <div 
@@ -629,7 +634,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               {/* Day Labels */}
               <div className="flex justify-between gap-2 sm:gap-4 mt-2">
                 {weeklyActivity.map((day) => {
-                  const isCurrentDay = day.shortDay === 'Wed';
+                  const isCurrentDay = day.shortDay === todayShortDay;
                   return (
                     <div key={day.shortDay} className="flex-1 text-center font-sans">
                       <span className={`text-xs block ${
@@ -662,6 +667,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   <span className="font-medium text-slate-700">
                     {hoveredDay.day}: <strong className="font-display font-bold text-slate-900 tabular-nums">{hoveredDay.hours}h</strong>
                   </span>
+                ) : totalStudyHoursThisWeek === 0 ? (
+                  <span>No completed focus sessions recorded this week</span>
                 ) : (
                   <span>Daily Avg: <strong className="font-display font-bold text-slate-900 tabular-nums">{dailyAverageHours} hrs</strong></span>
                 )}
@@ -763,7 +770,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               <div>
                 <h2 className="font-display text-lg font-bold text-slate-900 tracking-tight">Upcoming Deadlines</h2>
                 <p className="font-sans text-xs text-slate-500 mt-0.5">
-                  Milestones, problem sets, and exams
+                  Verified exam dates and saved milestones
                 </p>
               </div>
               <span className="font-display text-xs font-bold text-slate-600 tabular-nums">
@@ -773,8 +780,21 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
             <div className="divide-y divide-slate-100 mt-2 font-sans">
               {deadlines.length === 0 ? (
-                <div className="py-6 text-center text-slate-400 text-xs">
-                  No upcoming deadlines on your calendar.
+                <div className="py-8 text-center">
+                  <div className="w-11 h-11 rounded-2xl bg-indigo-50 text-indigo-600 flex items-center justify-center mx-auto mb-3">
+                    <CalendarDays className="w-5 h-5" />
+                  </div>
+                  <p className="text-sm font-semibold text-slate-800">No upcoming deadlines</p>
+                  <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto leading-relaxed">
+                    Deadlines appear here only from verified date-sheet entries or milestones you save.
+                  </p>
+                  <button
+                    onClick={() => onNavigateTab('exam')}
+                    className="mt-3 inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition-all shadow-xs cursor-pointer"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    <span>Add exam dates</span>
+                  </button>
                 </div>
               ) : (
                 deadlines.map((dl) => {
@@ -786,17 +806,27 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                   return (
                     <div key={dl.id} className="py-3 flex items-start justify-between gap-3 group">
                       <div className="flex items-start gap-3 min-w-0">
-                        <button
-                          onClick={() => onToggleDeadline(dl.id)}
-                          className="mt-0.5 text-slate-400 hover:text-indigo-600 transition-colors shrink-0 cursor-pointer"
-                          title={dl.completed ? "Mark incomplete" : "Mark submitted"}
-                        >
-                          {dl.completed ? (
-                            <CheckCircle2 className="w-4.5 h-4.5 text-emerald-600 fill-emerald-50" />
-                          ) : (
-                            <Circle className="w-4.5 h-4.5" />
-                          )}
-                        </button>
+                        {dl.source === 'exam-sheet' ? (
+                          <span
+                            className="mt-0.5 shrink-0 text-indigo-500"
+                            title="Verified examination date"
+                            aria-label="Verified examination date"
+                          >
+                            <CalendarDays className="w-4 h-4" />
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => onToggleDeadline(dl.id)}
+                            className="mt-0.5 text-slate-400 hover:text-indigo-600 transition-colors shrink-0 cursor-pointer"
+                            title={dl.completed ? "Mark incomplete" : "Mark submitted"}
+                          >
+                            {dl.completed ? (
+                              <CheckCircle2 className="w-4.5 h-4.5 text-emerald-600 fill-emerald-50" />
+                            ) : (
+                              <Circle className="w-4.5 h-4.5" />
+                            )}
+                          </button>
+                        )}
                         <div className="min-w-0">
                           <p className={`text-xs ${
                             dl.completed ? 'line-through text-slate-400 font-normal' : 'text-slate-900 font-medium'
@@ -807,8 +837,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                             <span className="font-display font-bold text-slate-700">{dl.subjectCode}</span>
                             <span aria-hidden="true" className="text-slate-300">·</span>
                             <span>{dl.dueDate}</span>
-                            <span aria-hidden="true" className="text-slate-300">·</span>
-                            <span className="font-display font-semibold text-slate-600">{dl.weight}</span>
+                            {dl.weight && (
+                              <>
+                                <span aria-hidden="true" className="text-slate-300">·</span>
+                                <span className="font-display font-semibold text-slate-600">{dl.weight}</span>
+                              </>
+                            )}
                           </div>
                         </div>
                       </div>

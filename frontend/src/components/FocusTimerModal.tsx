@@ -17,12 +17,26 @@ interface FocusTimerModalProps {
   isOpen: boolean;
   onClose: () => void;
   initialTaskName?: string;
+  /** Genuine completed sessions recorded today. */
+  sessionsCompletedToday?: number;
+  /** Genuine completed study minutes recorded today. */
+  minutesToday?: number;
+}
+
+function formatStudyMinutes(total: number): string {
+  const safe = Math.max(0, Math.round(total));
+  const hours = Math.floor(safe / 60);
+  const minutes = safe % 60;
+  if (hours === 0) return `${minutes}m`;
+  return `${hours}h ${minutes}m`;
 }
 
 export const FocusTimerModal: React.FC<FocusTimerModalProps> = ({
   isOpen,
   onClose,
-  initialTaskName = "CS 301: Dynamic Programming Practice",
+  initialTaskName = "Deep Work Session",
+  sessionsCompletedToday = 0,
+  minutesToday = 0,
 }) => {
   const [mode, setMode] = useState<'focus' | 'shortBreak' | 'longBreak'>('focus');
   const [duration, setDuration] = useState<number>(45 * 60); // seconds
@@ -30,14 +44,21 @@ export const FocusTimerModal: React.FC<FocusTimerModalProps> = ({
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [soundEnabled, setSoundEnabled] = useState<boolean>(true);
   const [taskName, setTaskName] = useState<string>(initialTaskName);
-  const [sessionsCompleted, setSessionsCompleted] = useState<number>(3);
+  const [sessionsCompleted, setSessionsCompleted] = useState<number>(sessionsCompletedToday);
+  const [extraMinutes, setExtraMinutes] = useState<number>(0);
+
+  // Re-sync the displayed totals with genuine records whenever the modal opens.
+  useEffect(() => {
+    setSessionsCompleted(sessionsCompletedToday);
+    setExtraMinutes(0);
+  }, [sessionsCompletedToday, isOpen]);
 
   useEffect(() => {
     setTaskName(initialTaskName);
   }, [initialTaskName]);
 
   useEffect(() => {
-    let timer: NodeJS.Timeout | null = null;
+    let timer: ReturnType<typeof setInterval> | null = null;
     if (isRunning && timeLeft > 0) {
       timer = setInterval(() => {
         setTimeLeft(prev => prev - 1);
@@ -55,6 +76,7 @@ export const FocusTimerModal: React.FC<FocusTimerModalProps> = ({
       }
       if (mode === 'focus') {
         setSessionsCompleted(prev => prev + 1);
+        setExtraMinutes(prev => prev + Math.round(duration / 60));
       }
     }
     return () => {
@@ -214,7 +236,7 @@ export const FocusTimerModal: React.FC<FocusTimerModalProps> = ({
             <CheckCircle2 className="w-4 h-4 text-emerald-600" />
             <span>Today's Sessions: <strong className="text-slate-800 tabular-nums">{sessionsCompleted}</strong></span>
           </div>
-          <span>Total Deep Work: <strong className="text-slate-800 tabular-nums">2h 15m</strong></span>
+          <span>Total Deep Work: <strong className="text-slate-800 tabular-nums">{formatStudyMinutes(minutesToday + extraMinutes)}</strong></span>
         </div>
       </div>
     </div>

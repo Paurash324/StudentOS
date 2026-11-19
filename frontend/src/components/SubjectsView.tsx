@@ -115,12 +115,7 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
         { id: `t3-${Date.now()}`, title: "Comprehensive Capstone", completed: false, estimatedHours: 8 }
       ],
       ...(verifiedSyllabus ? { syllabus: verifiedSyllabus } : {}),
-      nextExam: {
-        title: "Module Examination",
-        date: "Dec 15, 2026",
-        daysLeft: 34,
-        weight: "30% of grade"
-      }
+      // Examination dates come only from the verified date sheet — never invented here.
     };
 
     onAddSubject(subject);
