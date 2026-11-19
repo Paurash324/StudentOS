@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { PageTab, Subject, Deadline, TimetableBlock, ChatMessage, StudentProfile, SubjectPriority, ExamSchedule, StudyAvailability, StudyLogEntry } from './types';
 import { initialProfile } from './data/mockData';
 import { Sidebar } from './components/Sidebar';
@@ -15,15 +15,21 @@ import { migrateChatMessages } from './utils/aiContext';
 import { normalizeCode, normalizeExamSchedule } from './utils/dateSheet';
 import { DEFAULT_AVAILABILITY, localIsoDate, normalizeAvailability } from './utils/examEngine';
 import {
+  applyRecoveryImport,
   attachSubjectIds,
   bootstrapStudentState,
+  buildRecoveryPreview,
   buildUpcomingDeadlines,
   buildWeeklyActivity,
+  canOfferRecovery,
   computeStudyStreak,
   deleteSubjectFromPlan,
   getBrowserStorage,
+  markRecoveryImported,
+  persistSubjectsSafely,
   renameSubjectInExamSchedule,
   renameSubjectInPlan,
+  snapshotPlanBeforeReset,
   STUDENT_STATE_STORAGE_KEYS,
   STUDENT_STATE_VERSION_KEY,
   toggleSessionCompletion,
@@ -131,9 +137,14 @@ export default function App() {
     }
   }, [subjects, quizSubjectId]);
 
-  // Sync state changes to localStorage
+  // Subjects are written only through the guarded writer: an empty list can
+  // never overwrite a stored catalog unless the student deleted the last one.
+  const allowEmptySubjectsWrite = useRef(false);
   useEffect(() => {
-    persist('studentos_subjects', subjects, 'subjects');
+    persistSubjectsSafely(getBrowserStorage(), subjects, {
+      allowEmpty: allowEmptySubjectsWrite.current,
+    });
+    allowEmptySubjectsWrite.current = false;
   }, [subjects]);
 
   useEffect(() => {
@@ -227,6 +238,8 @@ export default function App() {
   const handleDeleteSubject = (subjectId: string) => {
     const removed = subjects.find(s => s.id === subjectId);
     const next = deleteSubjectFromPlan(subjectId, { subjects, timetableBlocks, deadlines });
+    // Deleting the final subject is the one legitimate way to persist an empty list.
+    allowEmptySubjectsWrite.current = next.subjects.length === 0;
     setSubjects(next.subjects);
     setTimetableBlocks(next.timetableBlocks);
     setDeadlines(next.deadlines);
@@ -291,7 +304,35 @@ export default function App() {
     setTimetableBlocks(prev => [...prev, newBlock]);
   };
 
+  // One-time, user-triggered recovery of the confirmed subject catalog.
+  const recoveryPreview = useMemo(() => buildRecoveryPreview(), []);
+  const recoveryAvailable = useMemo(
+    () => canOfferRecovery(getBrowserStorage(), subjects.length),
+    [subjects.length]
+  );
+
+  const handleImportRecovery = () => {
+    const merged = applyRecoveryImport(subjects, recoveryPreview.subjects);
+    allowEmptySubjectsWrite.current = merged.length === 0;
+    setSubjects(merged);
+    markRecoveryImported(getBrowserStorage());
+  };
+
   const handleResetData = () => {
+    const confirmed = window.confirm(
+      'Reset all StudentOS data to defaults? A local snapshot is saved first, but the current plan will be cleared.'
+    );
+    if (!confirmed) return;
+    snapshotPlanBeforeReset(getBrowserStorage(), {
+      subjects,
+      deadlines,
+      timetableBlocks,
+      studyLog,
+      assistantMessages,
+      examSchedule,
+      availability,
+    });
+    allowEmptySubjectsWrite.current = true;
     localStorage.removeItem('studentos_subjects');
     localStorage.removeItem('studentos_tasks');
     localStorage.removeItem('studentos_deadlines');
@@ -421,6 +462,10 @@ export default function App() {
               profile={profile}
               onUpdateProfile={(updated) => setProfile(prev => ({ ...prev, ...updated }))}
               onResetData={handleResetData}
+              recoveryAvailable={recoveryAvailable}
+              recoverySubjects={recoveryPreview.subjects}
+              recoverySyllabi={recoveryPreview.syllabiNeedingReverification}
+              onImportRecovery={handleImportRecovery}
             />
           )}
         </main>

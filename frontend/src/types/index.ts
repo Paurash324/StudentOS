@@ -95,6 +95,12 @@ export interface Subject {
   accentBg: string;
   topics: SyllabusTopic[];
   syllabus?: CourseSyllabus;
+  /**
+   * True when this subject used to have a verified syllabus that was lost with
+   * local storage and must be re-verified by the student. Never set for content
+   * that was fabricated or imported.
+   */
+  syllabusNeedsReverification?: boolean;
   pyq?: PyqAnalysis;
   nextExam?: {
     title: string;

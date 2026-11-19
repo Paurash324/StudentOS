@@ -9,21 +9,33 @@ import {
   RotateCcw,
   ShieldCheck,
   Download,
-  BookOpen
+  BookOpen,
+  AlertTriangle,
+  X
 } from 'lucide-react';
-import { StudentProfile } from '../types';
+import { StudentProfile, Subject } from '../types';
 
 interface SettingsViewProps {
   profile: StudentProfile;
   onUpdateProfile: (updated: Partial<StudentProfile>) => void;
   onResetData: () => void;
+  /** Offered only while the subject catalog is empty and recovery was never used. */
+  recoveryAvailable?: boolean;
+  recoverySubjects?: Subject[];
+  recoverySyllabi?: string[];
+  onImportRecovery?: () => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
   profile,
   onUpdateProfile,
   onResetData,
+  recoveryAvailable = false,
+  recoverySubjects = [],
+  recoverySyllabi = [],
+  onImportRecovery,
 }) => {
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [name, setName] = useState(profile.name);
   const [email, setEmail] = useState(profile.email);
   const [university, setUniversity] = useState(profile.university);
@@ -316,6 +328,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </div>
         </div>
 
+        {/* Recovery of the confirmed subject catalog (one time, never automatic) */}
+        {recoveryAvailable && recoverySubjects.length > 0 && (
+          <div className="bg-white border border-amber-200 rounded-2xl p-6 shadow-xs space-y-4">
+            <div className="flex items-center gap-3 pb-3 border-b border-slate-100">
+              <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center text-amber-600">
+                <AlertTriangle className="w-4 h-4" />
+              </div>
+              <div>
+                <h2 className="font-display text-base font-bold text-slate-900">Subject Data Recovery</h2>
+                <p className="font-sans text-xs text-slate-500">
+                  Restore the catalog you confirmed, once, after a storage loss
+                </p>
+              </div>
+            </div>
+            <p className="text-xs text-slate-600 leading-relaxed">
+              Your saved subject list is empty. You can import the nine subjects you confirmed — course
+              codes, instructors, credits and confidence are preserved. Nothing is imported until you
+              review the list and confirm.
+            </p>
+            <button
+              type="button"
+              onClick={() => setRecoveryOpen(true)}
+              className="flex items-center gap-2 px-4 py-2 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-xl hover:bg-amber-100 transition-colors cursor-pointer"
+            >
+              <BookOpen className="w-4 h-4" />
+              <span>Preview recovery ({recoverySubjects.length} subjects)</span>
+            </button>
+          </div>
+        )}
+
         {/* Buttons */}
         <div className="flex flex-col sm:flex-row items-center justify-between gap-4 pt-2">
           <button
@@ -335,6 +377,75 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </button>
         </div>
       </form>
+
+      {recoveryOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
+          <div className="bg-white border border-[#E5E9F2] rounded-2xl w-full max-w-2xl p-6 shadow-xl max-h-[90vh] flex flex-col">
+            <div className="flex items-start justify-between pb-4 border-b border-slate-100">
+              <div>
+                <h3 className="font-display text-lg font-bold text-slate-900">Confirm subject recovery</h3>
+                <p className="font-sans text-xs text-slate-500 mt-1">
+                  Review before importing. Nothing is created until you confirm.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setRecoveryOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto py-4 space-y-2 pr-1">
+              {recoverySubjects.map(subject => (
+                <div
+                  key={subject.id}
+                  className="p-3 rounded-xl border border-slate-100 bg-slate-50/80 flex items-start justify-between gap-3"
+                >
+                  <div className="min-w-0">
+                    <span className="font-display text-xs font-bold text-indigo-600">{subject.code}</span>
+                    <p className="text-xs font-semibold text-slate-800">{subject.name}</p>
+                    <p className="text-[11px] text-slate-500">{subject.professor}</p>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-[11px] font-semibold text-slate-600">{subject.credits} credits</p>
+                    <p className="text-[11px] text-slate-500">{subject.confidence}% confidence</p>
+                  </div>
+                </div>
+              ))}
+
+              {recoverySyllabi.length > 0 && (
+                <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-xl p-3 leading-relaxed">
+                  Verified syllabi for {recoverySyllabi.join(', ')} were not part of the recovered data,
+                  so they are marked as needing re-verification. No topics, exam dates or PYQ statistics
+                  are created.
+                </p>
+              )}
+            </div>
+
+            <div className="pt-4 border-t border-slate-100 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setRecoveryOpen(false)}
+                className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onImportRecovery?.();
+                  setRecoveryOpen(false);
+                }}
+                className="px-4 py-2 text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl transition-all shadow-2xs cursor-pointer"
+              >
+                Import {recoverySubjects.length} subjects
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

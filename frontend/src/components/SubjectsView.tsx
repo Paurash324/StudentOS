@@ -135,6 +135,7 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
       setEditingSubject({
         ...editingSubject,
         syllabus: verified,
+        syllabusNeedsReverification: false,
         topics: syllabusToTopics(verified, editingSubject.topics),
       });
     } else {
@@ -163,7 +164,12 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
       setReviewTarget(editingSubject.syllabus);
       return;
     }
-    onEditSubject(editingSubject);
+    // A re-verified syllabus clears the "needs re-verification" marker.
+    onEditSubject(
+      editingSubject.syllabus?.status === 'verified'
+        ? { ...editingSubject, syllabusNeedsReverification: false }
+        : editingSubject
+    );
     setEditingSubject(null);
   };
 
@@ -293,6 +299,11 @@ export const SubjectsView: React.FC<SubjectsViewProps> = ({
                     <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-md px-1.5 py-0.5">
                       <ShieldCheck className="w-3 h-3" />
                       Syllabus verified
+                    </span>
+                  ) : sub.syllabusNeedsReverification ? (
+                    <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-1.5 py-0.5">
+                      <ShieldCheck className="w-3 h-3" />
+                      Syllabus needs re-verification
                     </span>
                   ) : (
                     <span className="text-[10px] font-semibold text-slate-500 bg-slate-50 border border-slate-200 rounded-md px-1.5 py-0.5">

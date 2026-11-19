@@ -15,6 +15,10 @@ import {
 } from './dateSheet';
 import { getEligibleExams, localIsoDate } from './examEngine';
 import { migrateSubjects } from './syllabus';
+import {
+  buildRecoverySubjects,
+  RECOVERY_SYLLABUS_NEEDS_REVERIFICATION,
+} from '../data/recoverySubjects';
 
 /**
  * Student-state helpers.
@@ -260,6 +264,11 @@ export function resolveBlocksForDisplay(
 export interface MigrationReport {
   previousVersion: number | null;
   ranMigration: boolean;
+  /** How the stored subject list was classified before anything was written. */
+  subjectStore: SubjectStoreState;
+  preservedSubjectRecords: number;
+  droppedSubjectRecords: number;
+  archivedCorruptSubjects: boolean;
   removedDemoSubjects: string[];
   removedDemoNextExams: number;
   removedDemoBlocks: number;
@@ -279,9 +288,75 @@ export interface StudentStateSnapshot {
 }
 
 /**
+ * How the stored subject list was found. These states are deliberately distinct:
+ * a missing key and an explicitly empty array mean there is nothing to protect,
+ * while an unreadable payload may still hold real records that must not be
+ * rewritten.
+ */
+export type SubjectStoreState = 'missing' | 'empty' | 'valid' | 'unreadable';
+
+/** Preserved copy of any stored subject payload that could not be fully used. */
+export const SUBJECTS_CORRUPT_BACKUP_KEY = 'studentos_subjects_corrupt_backup';
+
+interface SubjectReadResult {
+  state: SubjectStoreState;
+  subjects: Subject[];
+  sourceRecords: number;
+  droppedRecords: number;
+}
+
+/** Classifies the stored subject list without modifying it. */
+function readStoredSubjects(storage: StorageLike | null): SubjectReadResult {
+  const rawText = safeGet(storage, STUDENT_STATE_STORAGE_KEYS.subjects);
+  if (rawText === null) {
+    return { state: 'missing', subjects: [], sourceRecords: 0, droppedRecords: 0 };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(rawText);
+  } catch (err) {
+    console.warn('[StudentOS] Stored subjects are not valid JSON; keeping them untouched', err);
+    return { state: 'unreadable', subjects: [], sourceRecords: 0, droppedRecords: 0 };
+  }
+
+  if (!Array.isArray(parsed)) {
+    console.warn('[StudentOS] Stored subjects are not an array; keeping them untouched');
+    return { state: 'unreadable', subjects: [], sourceRecords: 0, droppedRecords: 0 };
+  }
+
+  if (parsed.length === 0) {
+    return { state: 'empty', subjects: [], sourceRecords: 0, droppedRecords: 0 };
+  }
+
+  const migrated = migrateSubjects(parsed, []);
+  const droppedRecords = parsed.length - migrated.length;
+  if (migrated.length === 0) {
+    console.warn('[StudentOS] Stored subjects contain no usable records; keeping them untouched');
+    return { state: 'unreadable', subjects: [], sourceRecords: parsed.length, droppedRecords };
+  }
+
+  return { state: 'valid', subjects: migrated, sourceRecords: parsed.length, droppedRecords };
+}
+
+/** Keeps the original text of a partially unusable payload before it is cleaned. */
+function archiveCorruptSubjects(storage: StorageLike | null): boolean {
+  const rawText = safeGet(storage, STUDENT_STATE_STORAGE_KEYS.subjects);
+  if (rawText === null) return false;
+  try {
+    storage?.setItem(SUBJECTS_CORRUPT_BACKUP_KEY, rawText);
+    return true;
+  } catch (err) {
+    console.warn('[StudentOS] Could not archive the unreadable subject payload', err);
+    return false;
+  }
+}
+
+/**
  * Targeted, idempotent migration. It only removes records that can be
  * identified as the original demo dataset (or records whose subject no longer
- * exists) and never clears the whole store.
+ * exists) and never clears the whole store. A subject list that cannot be read
+ * is left exactly as it is, so a later recovery can still use it.
  */
 export function bootstrapStudentState(
   storage: StorageLike | null = getBrowserStorage()
@@ -290,9 +365,10 @@ export function bootstrapStudentState(
   const parsedVersion = rawVersion === null ? Number.NaN : Number.parseInt(rawVersion, 10);
   const previousVersion = Number.isFinite(parsedVersion) ? parsedVersion : null;
 
-  /* Subjects: demo records removed, everything else preserved untouched. */
-  const subjectsRaw = readJson(storage, STUDENT_STATE_STORAGE_KEYS.subjects);
-  const migratedSubjects = Array.isArray(subjectsRaw) ? migrateSubjects(subjectsRaw, []) : [];
+  /* Subjects: classified first, then only the seeded demo records are removed. */
+  const storedSubjects = readStoredSubjects(storage);
+  const subjectStore = storedSubjects.state;
+  const migratedSubjects = storedSubjects.subjects;
   const removedDemoSubjects = migratedSubjects
     .filter(isLegacyDemoSubject)
     .map(subject => subject.id);
@@ -303,22 +379,39 @@ export function bootstrapStudentState(
   const subjects = keptSubjects.map(subject =>
     isLegacyDemoNextExam(subject.nextExam) ? { ...subject, nextExam: undefined } : subject
   );
+  const archivedCorruptSubjects =
+    subjectStore === 'valid' && storedSubjects.droppedRecords > 0
+      ? archiveCorruptSubjects(storage)
+      : false;
+
+  /*
+   * Timetable and deadlines are only reconciled against a subject list that was
+   * actually readable. Reconciling against an unknown catalog would classify
+   * genuine sessions and milestones as orphans and delete them.
+   */
+  const canReconcilePlan = subjectStore !== 'unreadable';
 
   /* Timetable: demo blocks, then orphaned pending blocks of deleted subjects. */
   const blocksRaw = readJson(storage, STUDENT_STATE_STORAGE_KEYS.timetable);
   const storedBlocks = Array.isArray(blocksRaw) ? blocksRaw.filter(isStoredBlock) : [];
-  const withoutDemoBlocks = storedBlocks.filter(block => !isLegacyDemoBlock(block));
-  const reconciledBlocks = attachSubjectIds(withoutDemoBlocks, subjects);
+  const withoutDemoBlocks = canReconcilePlan
+    ? storedBlocks.filter(block => !isLegacyDemoBlock(block))
+    : storedBlocks;
+  const reconciledBlocks = canReconcilePlan
+    ? attachSubjectIds(withoutDemoBlocks, subjects)
+    : withoutDemoBlocks;
   const removedDemoBlocks = storedBlocks.length - withoutDemoBlocks.length;
   const removedOrphanBlocks = withoutDemoBlocks.length - reconciledBlocks.length;
 
   /* Deadlines: demo records and records for subjects that no longer exist. */
   const deadlinesRaw = readJson(storage, STUDENT_STATE_STORAGE_KEYS.deadlines);
   const storedDeadlines = Array.isArray(deadlinesRaw) ? deadlinesRaw.filter(isStoredDeadline) : [];
-  const withoutDemoDeadlines = storedDeadlines.filter(deadline => !isLegacyDemoDeadline(deadline));
-  const reconciledDeadlines = withoutDemoDeadlines.filter(deadline =>
-    Boolean(findDeadlineSubject(deadline, subjects))
-  );
+  const withoutDemoDeadlines = canReconcilePlan
+    ? storedDeadlines.filter(deadline => !isLegacyDemoDeadline(deadline))
+    : storedDeadlines;
+  const reconciledDeadlines = canReconcilePlan
+    ? withoutDemoDeadlines.filter(deadline => Boolean(findDeadlineSubject(deadline, subjects)))
+    : withoutDemoDeadlines;
   const removedDemoDeadlines = storedDeadlines
     .filter(isLegacyDemoDeadline)
     .map(deadline => deadline.id);
@@ -356,9 +449,18 @@ export function bootstrapStudentState(
     removedLegacyActivity ||
     removedLegacyTasks;
 
-  writeJson(storage, STUDENT_STATE_STORAGE_KEYS.subjects, subjects);
-  writeJson(storage, STUDENT_STATE_STORAGE_KEYS.deadlines, reconciledDeadlines);
-  writeJson(storage, STUDENT_STATE_STORAGE_KEYS.timetable, reconciledBlocks);
+  /*
+   * Only a readable subject list is ever rewritten. A missing key, an
+   * explicitly empty array and an unreadable payload are all left exactly as
+   * the student's browser has them, so no startup can turn real data into [].
+   */
+  if (subjectStore === 'valid') {
+    writeJson(storage, STUDENT_STATE_STORAGE_KEYS.subjects, subjects);
+  }
+  if (canReconcilePlan) {
+    writeJson(storage, STUDENT_STATE_STORAGE_KEYS.deadlines, reconciledDeadlines);
+    writeJson(storage, STUDENT_STATE_STORAGE_KEYS.timetable, reconciledBlocks);
+  }
   writeJson(storage, STUDENT_STATE_STORAGE_KEYS.studyLog, studyLog);
   try {
     storage?.setItem(STUDENT_STATE_VERSION_KEY, String(STUDENT_STATE_VERSION));
@@ -369,6 +471,10 @@ export function bootstrapStudentState(
   const report: MigrationReport = {
     previousVersion,
     ranMigration,
+    subjectStore,
+    preservedSubjectRecords: subjects.length,
+    droppedSubjectRecords: storedSubjects.droppedRecords,
+    archivedCorruptSubjects,
     removedDemoSubjects,
     removedDemoNextExams,
     removedDemoBlocks,
@@ -378,6 +484,13 @@ export function bootstrapStudentState(
     removedLegacyActivity,
     removedLegacyTasks,
   };
+
+  if (subjectStore === 'unreadable') {
+    console.warn(
+      '[StudentOS] Stored subjects could not be read; local storage was left untouched',
+      report
+    );
+  }
 
   if (
     removedDemoSubjects.length > 0 ||
@@ -656,4 +769,94 @@ export function buildWeeklyActivity(
       })),
     };
   });
+}
+
+/* -------------------------------- recovery -------------------------------- */
+
+export const RECOVERY_IMPORT_KEY = 'studentos_recovery_import_v1';
+export const PRE_RESET_BACKUP_KEY = 'studentos_pre_reset_backup';
+
+export interface RecoveryPreview {
+  subjects: Subject[];
+  /** Subjects whose verified syllabus was not part of the recovered data. */
+  syllabiNeedingReverification: string[];
+}
+
+/** "Search my dates": the catalog the student confirmed, never auto-seeded. */
+export function buildRecoveryPreview(): RecoveryPreview {
+  return {
+    subjects: buildRecoverySubjects(),
+    syllabiNeedingReverification: [...RECOVERY_SYLLABUS_NEEDS_REVERIFICATION],
+  };
+}
+
+/** Recovery is offered only while there are no active subjects and only once. */
+export function canOfferRecovery(
+  storage: StorageLike | null,
+  activeSubjectCount: number
+): boolean {
+  if (!storage || activeSubjectCount > 0) return false;
+  return safeGet(storage, RECOVERY_IMPORT_KEY) === null;
+}
+
+/** Marks the one-time recovery as used so deleted subjects never come back. */
+export function markRecoveryImported(storage: StorageLike | null): void {
+  if (!storage) return;
+  try {
+    storage.setItem(RECOVERY_IMPORT_KEY, new Date().toISOString());
+  } catch (err) {
+    console.warn('[StudentOS] Could not record the recovery import', err);
+  }
+}
+
+/**
+ * Merges recovered subjects into the current catalog by course code, so a
+ * second import can never duplicate records and existing edits always win.
+ */
+export function applyRecoveryImport(existing: Subject[], recovered: Subject[]): Subject[] {
+  const codes = new Set(existing.map(subject => normalizeCode(subject.code)));
+  const additions = recovered.filter(subject => !codes.has(normalizeCode(subject.code)));
+  return [...existing, ...additions];
+}
+
+/**
+ * Guarded subject writer. An empty list is never allowed to replace a stored
+ * non-empty (or unreadable) catalog unless the student asked for it, which makes
+ * a silent wipe impossible even if a future effect mounts with empty state.
+ */
+export function persistSubjectsSafely(
+  storage: StorageLike | null,
+  subjects: Subject[],
+  options: { allowEmpty: boolean }
+): boolean {
+  if (!storage) return false;
+  if (subjects.length === 0 && !options.allowEmpty) {
+    const current = readStoredSubjects(storage);
+    if (current.state === 'valid' || current.state === 'unreadable') {
+      console.warn(
+        '[StudentOS] Refused to overwrite stored subjects with an empty list; reload will keep them'
+      );
+      return false;
+    }
+  }
+  writeJson(storage, STUDENT_STATE_STORAGE_KEYS.subjects, subjects);
+  return true;
+}
+
+/** Copies the current plan into a local snapshot before a user-requested reset. */
+export function snapshotPlanBeforeReset(
+  storage: StorageLike | null,
+  data: Record<string, unknown>
+): boolean {
+  if (!storage) return false;
+  try {
+    storage.setItem(
+      PRE_RESET_BACKUP_KEY,
+      JSON.stringify({ createdAt: new Date().toISOString(), data })
+    );
+    return true;
+  } catch (err) {
+    console.warn('[StudentOS] Could not save the pre-reset snapshot', err);
+    return false;
+  }
 }
