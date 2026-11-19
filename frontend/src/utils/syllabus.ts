@@ -239,7 +239,9 @@ export function migrateSubjects(raw: unknown, fallback: Subject[]): Subject[] {
     })
     .filter((subject: Subject | null): subject is Subject => subject !== null);
 
-  return subjects.length > 0 ? subjects : fallback;
+  // An explicitly empty stored list means the student deleted every subject.
+  // Do not resurrect the demo fallback in that case.
+  return subjects;
 }
 
 /**

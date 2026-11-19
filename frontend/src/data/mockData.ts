@@ -422,26 +422,6 @@ export const initialTimetableBlocks: TimetableBlock[] = [
   },
 ];
 
-export const initialAssistantMessages: ChatMessage[] = [
-  {
-    id: "msg-1",
-    sender: "assistant",
-    content: `Hello! I'm your **StudentOS Academic Assistant**. 
-
-I have access to your syllabus across **CS 301, CS 320, MATH 240, CS 280, and PHYS 150**, and I'm aware that your **CS 301 Midterm II is in 4 days**.
-
-What would you like to master today? I can explain challenging proofs, derive runtime bounds, break down systems architecture, or generate active recall flashcards.`,
-    timestamp: "08:15 AM",
-    subjectContext: "All Subjects",
-    suggestedFollowUps: [
-      "Explain Dijkstra's vs Bellman-Ford algorithms simply",
-      "Why does a 2-level page table save physical memory?",
-      "How to find the eigenvalues of a 2x2 matrix step-by-step",
-      "Give me a 3-day revision strategy for CS 301 Midterm"
-    ]
-  }
-];
-
 export const sampleQuizQuestions: Record<string, QuizQuestion[]> = {
   "cs301": [
     {

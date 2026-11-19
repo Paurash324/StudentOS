@@ -1,5 +1,6 @@
 import { QuizQuestion } from '../types';
 import { SyllabusContextPayload } from '../utils/syllabus';
+import { AISubjectContext } from '../utils/aiContext';
 
 /**
  * Get the API base URL for backend requests.
@@ -37,7 +38,8 @@ export async function askAcademicAssistant(
   subjectContext: string = "All Subjects",
   history: { role: string; text: string }[] = [],
   answerStyle: string = "exam_ready",
-  syllabus: SyllabusContextPayload | null = null
+  syllabus: SyllabusContextPayload | null = null,
+  subjectContexts: AISubjectContext[] = []
 ): Promise<{ text: string; followUps: string[] }> {
   try {
     const formattedMessages = [
@@ -57,20 +59,31 @@ export async function askAcademicAssistant(
         messages: formattedMessages,
         subject: subjectContext,
         answer_style: answerStyle,
-        syllabus: syllabus ?? undefined
+        syllabus: syllabus ?? undefined,
+        subjects: subjectContexts
       }),
     });
 
     if (response.ok) {
       const data = await response.json();
       if (data && data.reply) {
+        const focus =
+          subjectContext === 'All Subjects'
+            ? subjectContexts[0]?.name
+            : subjectContext;
         return {
           text: data.reply,
-          followUps: [
-            "Can you test me on this with a quick practice problem?",
-            "How does this appear on a typical university exam?",
-            "Can you summarize this in 3 key takeaways?"
-          ]
+          followUps: focus
+            ? [
+                `Give me a practice question on ${focus}`,
+                `Summarise this in 3 key takeaways`,
+                `How does this appear on a typical university exam?`
+              ]
+            : [
+                "Can you test me on this with a quick practice problem?",
+                "How does this appear on a typical university exam?",
+                "Can you summarize this in 3 key takeaways?"
+              ]
         };
       }
     } else {
@@ -78,6 +91,12 @@ export async function askAcademicAssistant(
     }
   } catch (err) {
     console.warn("Backend /api/chat fetch failed, falling back to local academic engine:", err);
+  }
+
+  // Subject-access questions are answered from the live StudentOS subject list,
+  // never from an external portal or a hardcoded demo list.
+  if (isSubjectAccessQuery(prompt)) {
+    return buildSubjectAccessReply(subjectContexts);
   }
 
   // Never fabricate a syllabus-grounded answer when the verified syllabus could not be sent.
@@ -93,12 +112,57 @@ export async function askAcademicAssistant(
   }
 
   // Domain-grounded university academic engine fallback (general knowledge only)
-  return generateDomainAcademicResponse(prompt, subjectContext);
+  return generateDomainAcademicResponse(prompt, subjectContext, subjectContexts);
+}
+
+function isSubjectAccessQuery(query: string): boolean {
+  const q = query.toLowerCase();
+  return (
+    (q.includes('access') && q.includes('subject')) ||
+    q.includes('subjects on this site') ||
+    q.includes('subjects do i have') ||
+    /(which|what|list|show|check)\b.{0,30}\bsubjects\b/.test(q)
+  );
+}
+
+function buildSubjectAccessReply(
+  subjectContexts: AISubjectContext[]
+): { text: string; followUps: string[] } {
+  if (subjectContexts.length === 0) {
+    return {
+      text: `### Your StudentOS Subjects\n\nYou haven't added any subjects to StudentOS yet. Once you add subjects in **My Subjects**, I can use them to guide explanations and revision.\n\nI can use the data you enter in StudentOS, but I cannot access external university portals or fetch records from your university.`,
+      followUps: [
+        'How do I add a subject in StudentOS?',
+        'What study techniques improve active recall?'
+      ]
+    };
+  }
+
+  const list = subjectContexts
+    .map(subject => {
+      const label = subject.code ? `**${subject.name}** (${subject.code})` : `**${subject.name}**`;
+      const status =
+        subject.syllabus_status === 'verified'
+          ? 'verified syllabus'
+          : 'no verified syllabus';
+      return `- ${label} — ${status}`;
+    })
+    .join('\n');
+
+  return {
+    text: `### Your StudentOS Subjects\n\nI can use the current subjects you've entered in StudentOS. Right now they are:\n\n${list}\n\nI can use data entered in StudentOS, but I cannot access external university portals or fetch your university records.`,
+    followUps: [
+      `Explain the core concepts of ${subjectContexts[0].name}`,
+      'Which of my subjects have a verified syllabus?',
+      'Create an active-recall revision plan for my current subjects'
+    ]
+  };
 }
 
 function generateDomainAcademicResponse(
   prompt: string, 
-  subjectContext: string
+  subjectContext: string,
+  subjectContexts: AISubjectContext[] = []
 ): { text: string; followUps: string[] } {
   const query = prompt.toLowerCase();
 
@@ -223,32 +287,21 @@ $$-x_1 + x_2 = 0 \\implies x_1 = x_2 \\implies v_1 = \\begin{pmatrix} 1 \\\\ 1 \
   }
 
   if (query.includes("revision") || query.includes("schedule") || query.includes("plan") || query.includes("exam")) {
+    const topics = subjectContexts
+      .filter(subject => subject.syllabus_status === 'verified')
+      .flatMap(subject => (subject.units ?? []).flatMap(unit => unit.topics))
+      .filter(Boolean)
+      .slice(0, 6);
+    const focusLines = topics.length
+      ? `\n\n**Topics from your verified syllabus to cover:**\n${topics.map(topic => `- ${topic}`).join('\n')}`
+      : '\n\nNo verified syllabus topics are available, so this plan uses general active-recall steps rather than official curriculum content.';
+
     return {
-      text: `### High-Yield 3-Day Revision Plan for CS 301 Midterm
-
-With your exam in **4 days (Saturday, Nov 15)**, passive re-reading has low retention. Here is a scientifically structured active recall timetable:
-
-#### Day 1 (Today): Algorithmic Invariants & Proofs
-- **Morning (90 min)**: Dynamic Programming state formulation. Practice 3 classic variants:
-  1. Unbounded Knapsack
-  2. Longest Common Subsequence (LCS) with space optimization
-  3. Matrix Chain Multiplication recurrence
-- **Afternoon (75 min)**: Graph Theory traversal invariants (DFS discovery/finish time theorem, parenthesis structure).
-- **Evening (45 min)**: Solve 5 quick MCQ quizzes in the Quiz Generator to identify blind spots.
-
-#### Day 2 (Thursday): Shortest Paths & Network Flow
-- **Morning (90 min)**: Contrast Dijkstra, Bellman-Ford, and Floyd-Warshall. Write Dijkstra from scratch without reference.
-- **Afternoon (60 min)**: Kruskal vs. Prim MST algorithms and Disjoint Set Union (DSU) complexity.
-- **Evening (60 min)**: Timed past exam questions (Strict 60-minute limit).
-
-#### Day 3 (Friday): Reductions & Mock Paper
-- **Morning (120 min)**: Full closed-book mock midterm paper.
-- **Afternoon (60 min)**: Error analysis journal: catalog every mistake into conceptual vs. arithmetic error.
-- **Night**: Light review of summary formulas, hydrate, and get $\\ge 8$ hours of sleep.`,
+      text: `### Active-Recall Revision Plan: ${subjectContext}\n\nThis is general study guidance, not a claim about your exam dates or university schedule.${focusLines}\n\n#### Session 1: Diagnose\n- Spend 20 minutes recalling definitions and key ideas from memory, then check your notes.\n- Mark each topic as secure, shaky, or unknown.\n\n#### Session 2: Practice\n- Work through 3–5 problems or past questions on your weakest topics.\n- Write out each step and explain why it is valid, not just the final answer.\n\n#### Session 3: Retrieve\n- Close your notes and recreate the main derivations, diagrams, or comparisons.\n- Revisit only the items you could not recall, then retest them later.\n\n#### Session 4: Consolidate\n- Summarise the subject in a one-page sheet of your own words.\n- Schedule a short spaced-review session for tomorrow and next week.`,
       followUps: [
-        "Create custom flashcard questions for Day 1",
-        "How do I formulate the DP state for Longest Increasing Subsequence?",
-        "Give me tips for staying calm during the exam"
+        `Create 5 practice questions on ${subjectContext}`,
+        'Turn my weakest topic into a study checklist',
+        'Suggest an active-recall technique for this subject'
       ]
     };
   }

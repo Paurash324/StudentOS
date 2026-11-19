@@ -17,6 +17,11 @@ import { Subject, ChatMessage } from '../types';
 import { askAcademicAssistant } from '../services/aiService';
 import { StudentOSLogo } from './StudentOSLogo';
 import { countSyllabusTopics, toSyllabusContextPayload } from '../utils/syllabus';
+import {
+  buildSuggestedPrompts,
+  buildSubjectContexts,
+  buildWelcomeMessage,
+} from '../utils/aiContext';
 
 export type AnswerStyle = 'quick' | 'exam_ready' | 'detailed';
 
@@ -238,17 +243,30 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
   const syllabusPayload = toSyllabusContextPayload(selectedSubject?.syllabus);
   const syllabusTopicCount = countSyllabusTopics(selectedSubject?.syllabus);
 
-  const suggestedPrompts = [
-    "Explain Dijkstra's Algorithm vs Bellman-Ford simply with an example",
-    "Why does a 2-level page table reduce physical memory in Operating Systems?",
-    "How to find the eigenvalues and eigenvectors of a 2x2 matrix step-by-step",
-    "Give me an active recall revision plan for CS 301 Midterm II",
-    "What is the difference between a Mutex and a Semaphore in concurrency?"
-  ];
+  // Reset the selector if the chosen subject is deleted or renamed away.
+  useEffect(() => {
+    if (selectedSubjectId !== 'all' && !subjects.some(s => s.id === selectedSubjectId)) {
+      setSelectedSubjectId('all');
+    }
+  }, [subjects, selectedSubjectId]);
+
+  const welcomeMessage = buildWelcomeMessage(subjects);
+  const promptGroups = buildSuggestedPrompts(subjects, selectedSubjectId);
 
   const handleSendMessage = async (textToSend?: string) => {
     const query = textToSend || inputQuery;
     if (!query.trim() || isLoading) return;
+
+    // Resolve the live subject list at request time so edits/additions/deletions
+    // are reflected immediately, without relying on a stale component closure.
+    const activeSubject = subjects.find(s => s.id === selectedSubjectId);
+    const requestSubjectContext = activeSubject
+      ? `${activeSubject.code} ${activeSubject.name}`
+      : 'All Subjects';
+    const requestSyllabus = activeSubject
+      ? toSyllabusContextPayload(activeSubject.syllabus)
+      : null;
+    const subjectContexts = buildSubjectContexts(subjects, selectedSubjectId);
 
     setErrorMessage(null);
     const userMessage: ChatMessage = {
@@ -256,7 +274,7 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
       sender: 'user',
       content: query.trim(),
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      subjectContext: selectedSubjectContext,
+      subjectContext: requestSubjectContext,
     };
 
     onAddMessage(userMessage);
@@ -271,10 +289,11 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
 
       const result = await askAcademicAssistant(
         query,
-        selectedSubjectContext,
+        requestSubjectContext,
         history,
         answerStyle,
-        syllabusPayload
+        requestSyllabus,
+        subjectContexts
       );
 
       const assistantMessage: ChatMessage = {
@@ -282,7 +301,7 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
         sender: 'assistant',
         content: result.text,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        subjectContext: selectedSubjectContext,
+        subjectContext: requestSubjectContext,
         suggestedFollowUps: result.followUps,
       };
 
@@ -318,7 +337,7 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
             <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" title="Active Groq AI Model" />
           </h1>
           <p className="font-sans text-slate-500 text-sm mt-1 leading-relaxed">
-            Personalized academic tutor grounded in your university syllabus, assignments, and exam invariants.
+            Personalized academic tutor grounded in the subjects and verified syllabi you've added to StudentOS.
           </p>
         </div>
 
@@ -346,7 +365,7 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
           <button
             onClick={onClearHistory}
             className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
-            title="Clear conversation"
+            title="Start a new chat (clears this conversation)"
           >
             <RotateCcw className="w-4 h-4" />
           </button>
@@ -424,22 +443,47 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
         </div>
       </div>
 
-      {/* Suggested Academic Prompts Strip */}
+      {/* Suggested Academic Prompts Strip (derived from current subjects) */}
       <div className="bg-white border border-[#E5E9F2] rounded-2xl p-4 shadow-xs font-sans">
         <div className="flex items-center gap-2 mb-2 text-xs font-semibold text-slate-600">
           <Lightbulb className="w-3.5 h-3.5 text-amber-500" />
           <span>Suggested Academic Inquiries:</span>
         </div>
-        <div className="flex flex-wrap gap-2">
-          {suggestedPrompts.map((prompt, idx) => (
-            <button
-              key={idx}
-              onClick={() => handleSendMessage(prompt)}
-              className="text-xs text-slate-600 hover:text-indigo-700 bg-slate-50 hover:bg-indigo-50/80 border border-slate-200/80 hover:border-indigo-200 px-3 py-1.5 rounded-lg transition-all text-left cursor-pointer active:scale-[0.99]"
-            >
-              {prompt}
-            </button>
-          ))}
+        {promptGroups.grounded.length > 0 && (
+          <div className="mb-2.5">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-700 mb-1.5">
+              From your verified syllabus
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {promptGroups.grounded.map((prompt, idx) => (
+                <button
+                  key={`grounded-${idx}`}
+                  onClick={() => handleSendMessage(prompt)}
+                  className="text-xs text-emerald-800 hover:text-emerald-900 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-3 py-1.5 rounded-lg transition-all text-left cursor-pointer active:scale-[0.99]"
+                >
+                  {prompt}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+        <div>
+          <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
+            {promptGroups.grounded.length > 0
+              ? 'General subject learning (not syllabus-grounded)'
+              : 'General subject learning'}
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {promptGroups.general.map((prompt, idx) => (
+              <button
+                key={`general-${idx}`}
+                onClick={() => handleSendMessage(prompt)}
+                className="text-xs text-slate-600 hover:text-indigo-700 bg-slate-50 hover:bg-indigo-50/80 border border-slate-200/80 hover:border-indigo-200 px-3 py-1.5 rounded-lg transition-all text-left cursor-pointer active:scale-[0.99]"
+              >
+                {prompt}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -455,6 +499,25 @@ export const AIAssistantView: React.FC<AIAssistantViewProps> = ({
       <div className="bg-white border border-[#E5E9F2] rounded-2xl shadow-xs overflow-hidden flex flex-col h-[580px] font-sans">
         {/* Messages Viewport */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {messages.length === 0 && (
+            <div className="flex gap-3.5 justify-start">
+              <StudentOSLogo size="sm" />
+              <div className="max-w-2xl space-y-2 items-start">
+                <div className="flex items-center gap-2 text-[11px] text-slate-400 font-sans">
+                  <span className="font-display font-semibold text-slate-700">StudentOS AI Tutor</span>
+                  <span>·</span>
+                  <span>Just now</span>
+                </div>
+                <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/70 text-slate-800 rounded-tl-xs shadow-2xs font-sans text-xs sm:text-sm">
+                  <RenderMarkdown text={welcomeMessage} />
+                  <div className="mt-3 pt-2.5 border-t border-slate-200/60 flex items-center justify-between text-xs text-slate-500">
+                    <span className="text-[11px] font-sans">StudentOS Groq Engine</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {messages.map((msg) => {
             const isUser = msg.sender === 'user';
             return (

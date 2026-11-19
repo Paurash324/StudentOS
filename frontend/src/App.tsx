@@ -5,7 +5,6 @@ import {
   initialDeadlines, 
   weeklyStudyActivity, 
   initialTimetableBlocks, 
-  initialAssistantMessages, 
   initialProfile 
 } from './data/mockData';
 import { Sidebar } from './components/Sidebar';
@@ -19,6 +18,7 @@ import { QuizGeneratorView } from './components/QuizGeneratorView';
 import { SettingsView } from './components/SettingsView';
 import { FocusTimerModal } from './components/FocusTimerModal';
 import { migrateSubjects } from './utils/syllabus';
+import { migrateChatMessages } from './utils/aiContext';
 import { normalizeExamSchedule } from './utils/dateSheet';
 import { DEFAULT_AVAILABILITY, normalizeAvailability } from './utils/examEngine';
 
@@ -67,8 +67,9 @@ export default function App() {
     return loaded;
   });
 
-  const [assistantMessages, setAssistantMessages] = useState<ChatMessage[]>(() => 
-    loadFromStorage<ChatMessage[]>('studentos_messages', initialAssistantMessages)
+  const [assistantMessages, setAssistantMessages] = useState<ChatMessage[]>(() =>
+    // Drop the outdated hardcoded starter greeting but keep genuine conversation history.
+    migrateChatMessages(loadFromStorage<ChatMessage[]>('studentos_messages', []))
   );
 
   // Phase 2 Exam Intelligence state (safe, version-tolerant loaders)
@@ -289,7 +290,7 @@ export default function App() {
     setDeadlines(initialDeadlines);
     setWeeklyActivity(weeklyStudyActivity);
     setTimetableBlocks(initialTimetableBlocks);
-    setAssistantMessages(initialAssistantMessages);
+    setAssistantMessages([]);
     setProfile(initialProfile);
     setExamSchedule({ entries: [] });
     setAvailability({ ...DEFAULT_AVAILABILITY });
